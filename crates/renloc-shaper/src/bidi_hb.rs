@@ -42,6 +42,7 @@ impl TextShaper {
         // Bidi analysis
         let bidi_info = BidiInfo::new(&text_nfc, None);
         let mut total_advance = 0.0f32;
+        let mut max_line_advance = 0.0f32;
         let mut glyph_count = 0;
 
         for para in &bidi_info.paragraphs {
@@ -54,32 +55,71 @@ impl TextShaper {
             let positions = glyph_buffer.glyph_positions();
             glyph_count += positions.len();
 
+            let mut line_advance = 0.0f32;
             for pos in positions {
-                total_advance += (pos.x_advance as f32) * scale_factor;
+                line_advance += (pos.x_advance as f32) * scale_factor;
             }
+            if line_advance > max_line_advance {
+                max_line_advance = line_advance;
+            }
+            total_advance += line_advance;
         }
 
         let ascender = (face.ascender() as f32) * scale_factor;
         let descender = (face.descender() as f32).abs() * scale_factor;
         let line_height = ascender + descender;
+        let num_lines = bidi_info.paragraphs.len().max(1) as f32;
+        let total_rendered_height = line_height * num_lines;
 
         let mut is_overflowing = false;
         if let Some(max_w) = max_box_width_px {
-            if total_advance > max_w {
+            let eval_w = if bidi_info.paragraphs.len() > 1 {
+                max_line_advance
+            } else {
+                total_advance
+            };
+            if eval_w > max_w {
                 is_overflowing = true;
             }
         }
         if let Some(max_h) = max_box_height_px {
-            if line_height > max_h {
+            if total_rendered_height > max_h {
                 is_overflowing = true;
             }
         }
 
         Ok(ShapedTextMetrics {
             total_advance_pixels: total_advance,
-            max_height_pixels: line_height,
+            max_height_pixels: total_rendered_height,
             glyph_count,
             is_overflowing,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shape_invalid_font() {
+        let res = TextShaper::shape_and_measure(b"invalid data", 14.0, "Xin chào", None, None);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_shape_and_overflow_detection() {
+        if std::path::Path::new("/usr/share/fonts/TTF/DejaVuSans.ttf").exists() {
+            let font_bytes = std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf").expect("read font");
+            
+            // Short text, large box -> No overflow
+            let m1 = TextShaper::shape_and_measure(&font_bytes, 16.0, "Xin chào", Some(500.0), Some(100.0)).expect("shape");
+            assert!(!m1.is_overflowing);
+            assert!(m1.total_advance_pixels > 0.0);
+
+            // Long text, tiny box -> Overflow detected
+            let m2 = TextShaper::shape_and_measure(&font_bytes, 16.0, "Đây là một đoạn hội thoại rất dài để kiểm tra tràn khung thoại trong Ren'Py.", Some(50.0), Some(100.0)).expect("shape");
+            assert!(m2.is_overflowing);
+        }
     }
 }

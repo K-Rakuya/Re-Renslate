@@ -97,3 +97,50 @@ impl CmapAuditor {
         dsl
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_audit_missing_characters() {
+        // Test auditing with empty / invalid font
+        let result = CmapAuditor::audit_font_bytes("invalid.ttf", b"not a font");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vietnamese_fontgroup_dsl_generation() {
+        let audit = FontAuditResult {
+            font_name: "custom.ttf".to_string(),
+            total_required: 134,
+            supported_count: 50,
+            missing_chars: vec!['à', 'á'],
+            coverage_ratio: 50.0 / 134.0,
+            is_fully_compatible: false,
+        };
+
+        let dsl = CmapAuditor::generate_renpy_fontgroup_dsl(
+            "custom_viet",
+            "fonts/custom.ttf",
+            "fonts/fallback.ttf",
+            &audit,
+        );
+
+        assert!(dsl.contains("renpy.register_font_group(\"custom_viet\""));
+        assert!(dsl.contains(".add(\"fonts/fallback.ttf\", 0x00c0, 0x1ef9)"));
+        assert!(dsl.contains(".add(\"fonts/custom.ttf\")"));
+    }
+
+    #[test]
+    fn test_system_dejavu_font_audit() {
+        if std::path::Path::new("/usr/share/fonts/TTF/DejaVuSans.ttf").exists() {
+            let font_bytes = std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf").expect("read font");
+            let result = CmapAuditor::audit_font_bytes("DejaVuSans.ttf", &font_bytes).expect("audit");
+            assert_eq!(result.total_required, 134);
+            assert_eq!(result.supported_count, 134);
+            assert!(result.is_fully_compatible);
+            assert_eq!(result.missing_chars.len(), 0);
+        }
+    }
+}
