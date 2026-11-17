@@ -88,3 +88,56 @@ export async function getSidecarStatus(): Promise<boolean> {
   if (!isTauri()) return true;
   return await invoke<boolean>('get_sidecar_status');
 }
+
+export interface ScanResult {
+  total_extracted: number;
+  db_path: string;
+  files_scanned: number;
+  rpyc_count: number;
+}
+
+export interface FontAuditItem {
+  font_name: string;
+  total_required: number;
+  supported_count: number;
+  missing_chars: string;
+  is_fully_compatible: boolean;
+}
+
+export interface FontAuditProjectResult {
+  fonts: FontAuditItem[];
+  is_all_compatible: boolean;
+  fontgroup_dsl: string;
+  total_fonts_checked: number;
+}
+
+export interface ExportResult {
+  exported_files: string[];
+  output_dir: string;
+  total_items: number;
+}
+
+export async function scanProject(gameDir: string, dbPath?: string): Promise<ScanResult> {
+  const res = await callSidecarRpc('scan_project', { game_dir: gameDir, db_path: dbPath });
+  return res as ScanResult;
+}
+
+export async function auditProjectFonts(gameDir: string, fallbackFont?: string): Promise<FontAuditProjectResult> {
+  const res = await callSidecarRpc('audit_project_fonts', { game_dir: gameDir, fallback_font: fallbackFont });
+  return res as FontAuditProjectResult;
+}
+
+export async function startTranslation(dbPath: string, limit: number = 500): Promise<{ translated_count: number; status: string }> {
+  const res = await callSidecarRpc('start_translation', { db_path: dbPath, limit });
+  return res as { translated_count: number; status: string };
+}
+
+export async function exportPackage(gameDir: string, dbPath?: string, language: string = 'vietnamese'): Promise<ExportResult> {
+  const res = await callSidecarRpc('export_package', { game_dir: gameDir, db_path: dbPath, language });
+  return res as ExportResult;
+}
+
+export async function launchGame(gameDir: string): Promise<{ launched: boolean; executable: string; pid: number }> {
+  const res = await callSidecarRpc('launch_game', { game_dir: gameDir });
+  return res as { launched: boolean; executable: string; pid: number };
+}
