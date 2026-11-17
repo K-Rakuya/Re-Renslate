@@ -27,17 +27,34 @@ fn get_python_path() -> PathBuf {
     }
 
     let mut candidates = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join(".venvs/core/bin/python"));
-        if let Some(p1) = cwd.parent() {
-            candidates.push(p1.join(".venvs/core/bin/python"));
-            if let Some(p2) = p1.parent() {
-                candidates.push(p2.join(".venvs/core/bin/python"));
+
+    // Check executable directory and its parents
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.join(".venvs/core/bin/python"));
+            candidates.push(exe_dir.join("resources/runtime/bin/python"));
+            if let Some(p1) = exe_dir.parent() {
+                candidates.push(p1.join(".venvs/core/bin/python"));
+                if let Some(p2) = p1.parent() {
+                    candidates.push(p2.join(".venvs/core/bin/python"));
+                }
             }
         }
     }
-    // Hardcoded project root fallback
-    candidates.push(PathBuf::from(".venvs/core/bin/python"));
+
+    // Check current working directory and its parents dynamically
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut curr = cwd.clone();
+        for _ in 0..5 {
+            candidates.push(curr.join(".venvs/core/bin/python"));
+            candidates.push(curr.join("resources/runtime/bin/python"));
+            if let Some(parent) = curr.parent() {
+                curr = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+    }
 
     for c in candidates {
         if c.exists() {

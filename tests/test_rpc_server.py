@@ -108,3 +108,62 @@ def test_death_pipe_listener():
     assert len(called) > 0, "Death pipe listener should trigger on pipe EOF"
     os.close(r_fd)
     del os.environ["RENSLATE_DEATH_PIPE_FD"]
+
+
+def test_rpc_system_specs_and_translation():
+    async def run_test():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sock_path = Path(tmpdir) / "test_rpc2.sock"
+            db_path = Path(tmpdir) / "test_proj.sqlite"
+            token = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+
+            from renloc_core.db_writer import DbWriter, init_schema
+            writer = DbWriter(db_path)
+            init_schema(writer.raw_connection)
+            with writer.write_transaction() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO translation_units (unit_identifier, row_order, file_path, line_number, source_text, speaker, status)
+                    VALUES ('say_1', 1, 'script.rpy', 10, 'Hello world', 'Eileen', 'PENDING')
+                    """
+                )
+
+            server = RpcServer(endpoint_path=sock_path, auth_token=token)
+            await server.start()
+
+            reader, r_writer = await asyncio.open_unix_connection(path=str(sock_path))
+
+            async def rpc_call(method: str, payload: dict):
+                req = {"session_token": token, "method": method, "payload": payload}
+                enc = msgpack.packb(req, use_bin_type=True)
+                r_writer.write(struct.pack("<I", len(enc)) + enc)
+                await r_writer.drain()
+                len_b = await reader.readexactly(4)
+                l = struct.unpack("<I", len_b)[0]
+                resp_b = await reader.readexactly(l)
+                return msgpack.unpackb(resp_b, raw=False)
+
+            # Test get_system_specs
+            res_specs = await rpc_call("get_system_specs", {})
+            assert res_specs["ok"] is True
+            assert "total_ram_mb" in res_specs["result"]
+
+            # Test start_translation (mock mode)
+            res_trans = await rpc_call("start_translation", {"db_path": str(db_path), "engine": "mock", "limit": 10})
+            assert res_trans["ok"] is True
+            assert res_trans["result"]["translated_count"] == 1
+
+            # Test progress
+            res_prog = await rpc_call("get_translation_progress", {})
+            assert res_prog["ok"] is True
+            assert res_prog["result"]["total"] == 1
+
+            # Test unload_model
+            res_unload = await rpc_call("unload_model", {})
+            assert res_unload["ok"] is True
+
+            r_writer.close()
+            await r_writer.wait_closed()
+            await server.stop()
+
+    asyncio.run(run_test())

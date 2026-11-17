@@ -79,40 +79,13 @@ export async function searchUnits(
 
 export async function callSidecarRpc(method: string, payload: unknown): Promise<unknown> {
   if (!isTauri()) {
-    if (method === 'scan_project') {
-      return { total_extracted: 350, db_path: '/mock/project.sqlite', files_scanned: 42, rpyc_count: 8 };
-    }
-    if (method === 'audit_project_fonts') {
-      return {
-        fonts: [
-          { font_name: 'DejaVuSans.ttf', total_required: 134, supported_count: 134, missing_chars: '', is_fully_compatible: true },
-          { font_name: 'CustomTitle.ttf', total_required: 134, supported_count: 50, missing_chars: 'àáảãạ', is_fully_compatible: false },
-        ],
-        is_all_compatible: false,
-        fontgroup_dsl: 'init python:\n    renpy.register_font_group("vietnamese_font_group",\n        FontGroup().add("game/fonts/original.ttf", 0x0020, 0x007e)\n        .add("game/tl/vietnamese/fonts/fallback.ttf", 0x00c0, 0x1ef9)\n        .add("game/fonts/original.ttf")\n    )',
-        total_fonts_checked: 2,
-      };
-    }
-    if (method === 'start_translation') {
-      return { translated_count: 500, status: 'completed' };
-    }
-    if (method === 'export_package') {
-      return {
-        exported_files: ['script.rpy', 'common.rpy', '00_renloc_fonts.rpy', 'renloc_runtime_hook.rpy'],
-        output_dir: '/mock/game/tl/vietnamese',
-        total_items: 350,
-      };
-    }
-    if (method === 'launch_game') {
-      return { launched: true, executable: 'game.sh', pid: 12345 };
-    }
-    return { ok: true, mock: true };
+    throw new Error('Chức năng RPC yêu cầu ứng dụng chạy trong môi trường Desktop Tauri (không hỗ trợ chạy thử nghiệm trên trình duyệt thuần).');
   }
   return await invoke('call_sidecar_rpc', { method, payload });
 }
 
 export async function getSidecarStatus(): Promise<boolean> {
-  if (!isTauri()) return true;
+  if (!isTauri()) return false;
   return await invoke<boolean>('get_sidecar_status');
 }
 
@@ -144,6 +117,78 @@ export interface ExportResult {
   total_items: number;
 }
 
+export interface DetectedModel {
+  path: string;
+  name: string;
+  size_mb: number;
+}
+
+export interface SystemSpecs {
+  gpu_name: string;
+  total_vram_mb: number;
+  free_vram_mb: number;
+  used_vram_mb: number;
+  total_ram_mb: number;
+  free_ram_mb: number;
+  swap_total_mb: number;
+  swap_free_mb: number;
+  cuda_available: boolean;
+  gpu_offload_supported: boolean;
+  detected_models: DetectedModel[];
+}
+
+export interface ModelAssessment {
+  status: 'safe_full_gpu' | 'safe_hybrid' | 'warning_tight' | 'oom_risk' | 'error';
+  message: string;
+  can_fit: boolean;
+  recommended_gpu_layers: number;
+  recommended_ctx: number;
+  file_size_mb?: number;
+  free_vram_mb?: number;
+  free_ram_mb?: number;
+}
+
+export interface TranslationProgress {
+  is_running: boolean;
+  total: number;
+  current: number;
+  current_source: string;
+  current_target: string;
+  status: string;
+  error?: string | null;
+}
+
+export interface StartTranslationParams {
+  db_path: string;
+  engine?: string;
+  model_path?: string;
+  server_url?: string;
+  n_gpu_layers?: number;
+  n_ctx?: number;
+  temperature?: number;
+  limit?: number;
+}
+
+export async function getSystemSpecs(): Promise<SystemSpecs> {
+  const res = await callSidecarRpc('get_system_specs', {});
+  return res as SystemSpecs;
+}
+
+export async function assessModel(modelPath: string): Promise<ModelAssessment> {
+  const res = await callSidecarRpc('assess_model', { model_path: modelPath });
+  return res as ModelAssessment;
+}
+
+export async function getTranslationProgress(): Promise<TranslationProgress> {
+  const res = await callSidecarRpc('get_translation_progress', {});
+  return res as TranslationProgress;
+}
+
+export async function unloadModel(): Promise<{ status: string }> {
+  const res = await callSidecarRpc('unload_model', {});
+  return res as { status: string };
+}
+
 export async function scanProject(gameDir: string, dbPath?: string): Promise<ScanResult> {
   const res = await callSidecarRpc('scan_project', { game_dir: gameDir, db_path: dbPath });
   return res as ScanResult;
@@ -154,8 +199,8 @@ export async function auditProjectFonts(gameDir: string, fallbackFont?: string):
   return res as FontAuditProjectResult;
 }
 
-export async function startTranslation(dbPath: string, limit: number = 500): Promise<{ translated_count: number; status: string }> {
-  const res = await callSidecarRpc('start_translation', { db_path: dbPath, limit });
+export async function startTranslation(params: StartTranslationParams): Promise<{ translated_count: number; status: string }> {
+  const res = await callSidecarRpc('start_translation', params);
   return res as { translated_count: number; status: string };
 }
 

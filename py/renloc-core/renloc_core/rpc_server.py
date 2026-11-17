@@ -55,6 +55,17 @@ class RpcServer:
         self.server: Optional[asyncio.AbstractServer] = None
         self.is_running: bool = False
         self._handlers: Dict[str, Callable[[Any], Any]] = {}
+        self._cached_adapter: Optional[Any] = None
+        self._cached_adapter_key: Optional[str] = None
+        self._translation_progress: Dict[str, Any] = {
+            "is_running": False,
+            "total": 0,
+            "current": 0,
+            "current_source": "",
+            "current_target": "",
+            "status": "idle",
+            "error": None,
+        }
         self._register_default_handlers()
 
     def _register_default_handlers(self) -> None:
@@ -65,6 +76,10 @@ class RpcServer:
         self.register_handler("measure_dialogue", self._handle_measure_dialogue)
         self.register_handler("scan_project", self._handle_scan_project)
         self.register_handler("audit_project_fonts", self._handle_audit_project_fonts)
+        self.register_handler("get_system_specs", self._handle_get_system_specs)
+        self.register_handler("assess_model", self._handle_assess_model)
+        self.register_handler("get_translation_progress", self._handle_get_translation_progress)
+        self.register_handler("unload_model", self._handle_unload_model)
         self.register_handler("start_translation", self._handle_start_translation)
         self.register_handler("export_package", self._handle_export_package)
         self.register_handler("launch_game", self._handle_launch_game)
@@ -213,41 +228,169 @@ class RpcServer:
             "total_fonts_checked": len(font_files),
         }
 
+    def _handle_get_system_specs(self, _payload: Any) -> Dict[str, Any]:
+        """Returns real-time GPU/RAM specs and detects available local GGUF models."""
+        from renloc_core.llm_engine.adapters.llamacpp_adapter import get_system_hardware_info
+        specs = get_system_hardware_info()
+
+        candidate_dirs = [
+            Path.home() / "models",
+            Path.home() / ".cache" / "huggingface" / "hub",
+            Path.cwd() / "models",
+        ]
+        if os.environ.get("RENSLATE_MODELS_DIR"):
+            candidate_dirs.insert(0, Path(os.environ["RENSLATE_MODELS_DIR"]))
+        found_models: List[Dict[str, Any]] = []
+        for cdir in candidate_dirs:
+            if cdir.exists() and cdir.is_dir():
+                for p in cdir.glob("*.gguf"):
+                    found_models.append({
+                        "path": str(p),
+                        "name": p.name,
+                        "size_mb": round(p.stat().st_size / (1024 * 1024), 1),
+                    })
+
+        specs["detected_models"] = found_models
+        return specs
+
+    def _handle_assess_model(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Assesses OOM risk and calculates safe layer allocation for a GGUF model."""
+        model_path = payload.get("model_path")
+        if not model_path:
+            raise ValueError("Missing 'model_path' parameter")
+        from renloc_core.llm_engine.adapters.llamacpp_adapter import assess_model_memory_risk
+        return assess_model_memory_risk(model_path)
+
+    def _handle_get_translation_progress(self, _payload: Any) -> Dict[str, Any]:
+        """Returns current translation execution progress."""
+        return self._translation_progress
+
+    def _handle_unload_model(self, _payload: Any) -> Dict[str, Any]:
+        """Unloads cached GGUF model to completely free VRAM and RAM."""
+        if self._cached_adapter is not None:
+            self._cached_adapter.unload()
+            self._cached_adapter = None
+            self._cached_adapter_key = None
+        return {"status": "unloaded"}
+
     def _handle_start_translation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Translates pending dialogue units in the database."""
+        """Translates pending dialogue units using GGUF / local model with OOM guard."""
         db_path_str = payload.get("db_path")
         if not db_path_str:
             raise ValueError("Missing 'db_path' parameter")
         db_path = Path(db_path_str).resolve()
 
+        engine = payload.get("engine", "llama.cpp")
+        model_path = payload.get("model_path")
+        server_url = payload.get("server_url")
+        n_gpu_layers = payload.get("n_gpu_layers", -1)
+        n_ctx = int(payload.get("n_ctx", 2048))
+        temperature = float(payload.get("temperature", 0.2))
+        limit = int(payload.get("limit", 50))
+
         from renloc_core.db_writer import DbWriter
         writer = DbWriter(db_path)
 
-        translated = 0
-        with writer.write_transaction() as cursor:
-            rows = cursor.execute(
-                """
-                SELECT id, unit_identifier, source_text, speaker
-                FROM translation_units
-                WHERE status = 'PENDING' OR target_text IS NULL
-                LIMIT ?
-                """,
-                (payload.get("limit", 500),)
-            ).fetchall()
+        from renloc_core.llm_engine.adapters.llamacpp_adapter import (
+            LlamaCppAdapter,
+            assess_model_memory_risk,
+        )
 
-            for row in rows:
-                uid, unit_id, src_text, who = row
-                # High-quality mock translation placeholder if offline
-                mock_translation = f"[Dịch] {src_text}"
-                cursor.execute(
-                    """
-                    UPDATE translation_units
-                    SET target_text = ?, status = 'COMMITTED', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    """,
-                    (mock_translation, uid)
+        adapter: Optional[LlamaCppAdapter] = None
+        if engine == "llama.cpp":
+            if server_url:
+                adapter = LlamaCppAdapter(server_url=server_url)
+            elif model_path:
+                mp = Path(model_path).expanduser().resolve()
+                if not mp.exists():
+                    raise FileNotFoundError(f"File GGUF model không tồn tại: {model_path}")
+                risk = assess_model_memory_risk(mp)
+                if not risk["can_fit"] and risk["status"] == "oom_risk":
+                    raise MemoryError(risk["message"])
+
+                adapter_key = f"{str(mp)}:{n_gpu_layers}:{n_ctx}"
+                if self._cached_adapter is not None and self._cached_adapter_key == adapter_key:
+                    adapter = self._cached_adapter
+                else:
+                    if self._cached_adapter is not None:
+                        self._cached_adapter.unload()
+                    adapter = LlamaCppAdapter(
+                        model_path=str(mp),
+                        n_ctx=n_ctx,
+                        n_gpu_layers=n_gpu_layers,
+                    )
+                    self._cached_adapter = adapter
+                    self._cached_adapter_key = adapter_key
+            else:
+                raise ValueError(
+                    "Động cơ llama.cpp yêu cầu cung cấp đường dẫn tệp model GGUF (model_path) "
+                    "hoặc địa chỉ máy chủ suy luận (server_url)."
                 )
-                translated += 1
+        elif engine == "mock":
+            adapter = None
+        else:
+            raise NotImplementedError(f"Động cơ suy luận '{engine}' chưa được cấu hình backend.")
+
+        translated = 0
+        self._translation_progress = {
+            "is_running": True,
+            "total": 0,
+            "current": 0,
+            "current_source": "",
+            "current_target": "",
+            "status": "translating",
+            "error": None,
+        }
+
+        try:
+            with writer.write_transaction() as cursor:
+                rows = cursor.execute(
+                    """
+                    SELECT id, unit_identifier, source_text, speaker
+                    FROM translation_units
+                    WHERE status = 'PENDING' OR target_text IS NULL
+                    LIMIT ?
+                    """,
+                    (limit,)
+                ).fetchall()
+
+                self._translation_progress["total"] = len(rows)
+
+                for idx, row in enumerate(rows):
+                    uid, unit_id, src_text, who = row
+                    self._translation_progress["current"] = idx + 1
+                    self._translation_progress["current_source"] = src_text
+
+                    if adapter is not None:
+                        gen_res = adapter.translate_dialogue(
+                            source_text=src_text,
+                            speaker=who,
+                            temperature=temperature,
+                        )
+                        trans_text = gen_res.text
+                    elif engine == "mock":
+                        trans_text = f"[Mock Test] {src_text}"
+                    else:
+                        raise RuntimeError("Không có backend suy luận khả dụng.")
+
+                    self._translation_progress["current_target"] = trans_text
+                    cursor.execute(
+                        """
+                        UPDATE translation_units
+                        SET target_text = ?, status = 'COMMITTED', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (trans_text, uid)
+                    )
+                    translated += 1
+
+            self._translation_progress["status"] = "completed"
+            self._translation_progress["is_running"] = False
+        except Exception as e:
+            self._translation_progress["status"] = "error"
+            self._translation_progress["is_running"] = False
+            self._translation_progress["error"] = str(e)
+            raise e
 
         return {
             "translated_count": translated,

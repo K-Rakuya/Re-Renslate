@@ -9,7 +9,14 @@ import {
   startTranslation,
   exportPackage,
   launchGame,
+  getSystemSpecs,
+  assessModel,
+  getTranslationProgress,
+  unloadModel,
   FontAuditItem,
+  SystemSpecs,
+  ModelAssessment,
+  TranslationProgress,
 } from './api';
 import {
   FolderOpen,
@@ -22,13 +29,18 @@ import {
   RefreshCw,
   AlertTriangle,
   CheckCircle2,
+  Cpu,
+  HardDrive,
+  Zap,
+  Trash2,
+  AlertCircle,
 } from 'lucide-react';
 
 type Tab = 'project' | 'editor' | 'ai' | 'font' | 'export';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('project');
-  const [gameDir, setGameDir] = useState<string>('tests/fixtures');
+  const [gameDir, setGameDir] = useState<string>('');
   const [dbPath, setDbPath] = useState<string>('');
   const [totalCount, setTotalCount] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -48,13 +60,31 @@ export const App: React.FC = () => {
   const [fontGroupDsl, setFontGroupDsl] = useState<string>('');
   const [isAllFontsCompatible, setIsAllFontsCompatible] = useState<boolean>(true);
 
-  // Translation state
+  // Translation & Hardware state
   const [aiEngine, setAiEngine] = useState<string>('llama.cpp');
   const [translatedProgress, setTranslatedProgress] = useState<number>(0);
+  const [systemSpecs, setSystemSpecs] = useState<SystemSpecs | null>(null);
+  const [modelAssessment, setModelAssessment] = useState<ModelAssessment | null>(null);
+  const [modelPath, setModelPath] = useState<string>('');
+  const [serverUrl, setServerUrl] = useState<string>('');
+  const [nGpuLayers, setNGpuLayers] = useState<number>(-1);
+  const [nCtx, setNCtx] = useState<number>(2048);
+  const [temperature, setTemperature] = useState<number>(0.2);
+  const [batchLimit, setBatchLimit] = useState<number>(20);
+  const [liveProgress, setLiveProgress] = useState<TranslationProgress | null>(null);
 
   // Export state
   const [exportedFiles, setExportedFiles] = useState<string[]>([]);
   const [exportOutputDir, setExportOutputDir] = useState<string>('');
+
+  const fetchSpecs = async () => {
+    try {
+      const specs = await getSystemSpecs();
+      setSystemSpecs(specs);
+    } catch (e) {
+      console.warn('Failed to load system specs:', e);
+    }
+  };
 
   useEffect(() => {
     const checkStatus = async () => {
@@ -66,7 +96,42 @@ export const App: React.FC = () => {
       }
     };
     checkStatus();
+    fetchSpecs();
   }, []);
+
+  // Assess memory risk whenever modelPath changes
+  useEffect(() => {
+    if (modelPath && modelPath.endsWith('.gguf')) {
+      assessModel(modelPath)
+        .then((res) => {
+          setModelAssessment(res);
+          if (res.recommended_ctx && nCtx > res.recommended_ctx) {
+            setNCtx(res.recommended_ctx);
+          }
+        })
+        .catch((e) => console.warn('Model assessment failed:', e));
+    } else {
+      setModelAssessment(null);
+    }
+  }, [modelPath]);
+
+  // Poll progress during active translation
+  useEffect(() => {
+    let interval: any = null;
+    if (isLoading && activeTab === 'ai') {
+      interval = setInterval(async () => {
+        try {
+          const prog = await getTranslationProgress();
+          setLiveProgress(prog);
+        } catch (e) {
+          console.warn(e);
+        }
+      }, 500);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isLoading, activeTab]);
 
   // 1. Scan Project
   const handleScanProject = async () => {
@@ -114,19 +179,50 @@ export const App: React.FC = () => {
 
   // 3. Start AI Translation
   const handleStartAi = async () => {
-    if (!dbPath.trim()) return;
+    if (!dbPath.trim()) {
+      setStatusMessage('Vui lòng mở hoặc quét dự án trước khi dịch.');
+      return;
+    }
+    if (aiEngine === 'llama.cpp' && !modelPath.trim() && !serverUrl.trim()) {
+      setStatusMessage('Vui lòng nhập đường dẫn file GGUF model (.gguf) hoặc URL máy chủ suy luận.');
+      return;
+    }
     setIsLoading(true);
-    setStatusMessage(`Đang chạy dịch tự động qua động cơ ${aiEngine} kết hợp TEaR + MBR...`);
+    setStatusMessage(`Đang chạy dịch tự động qua động cơ ${aiEngine}...`);
     try {
-      const res = await startTranslation(dbPath, 500);
+      const res = await startTranslation({
+        db_path: dbPath,
+        engine: aiEngine,
+        model_path: modelPath.trim() || undefined,
+        server_url: serverUrl.trim() || undefined,
+        n_gpu_layers: nGpuLayers,
+        n_ctx: nCtx,
+        temperature: temperature,
+        limit: batchLimit,
+      });
       setTranslatedProgress(res.translated_count);
       const count = await getTotalCount();
       setTotalCount(count);
       setStatusMessage(`Đã hoàn tất dịch lô ${res.translated_count} câu thoại!`);
+      await fetchSpecs();
     } catch (err: any) {
       setStatusMessage(`Lỗi dịch: ${err.message || err}`);
     } finally {
       setIsLoading(false);
+      try {
+        const prog = await getTranslationProgress();
+        setLiveProgress(prog);
+      } catch (_) {}
+    }
+  };
+
+  const handleUnloadModel = async () => {
+    try {
+      await unloadModel();
+      setStatusMessage('Đã giải phóng model khỏi VRAM/RAM thành công.');
+      await fetchSpecs();
+    } catch (err: any) {
+      setStatusMessage(`Lỗi khi giải phóng model: ${err.message || err}`);
     }
   };
 
@@ -335,14 +431,63 @@ export const App: React.FC = () => {
         {activeTab === 'ai' && (
           <div className="flex-1 overflow-y-auto p-8 max-w-4xl mx-auto w-full flex flex-col justify-center gap-6">
             <div className="bg-[#181825] border border-[#313244] rounded-2xl p-6 shadow-xl flex flex-col gap-5">
-              <div className="flex items-center gap-3 border-b border-[#313244] pb-4">
-                <Sparkles className="w-6 h-6 text-[#cba6f7]" />
-                <div>
-                  <h2 className="text-base font-bold text-[#cdd6f4]">Bước 3: Cấu Hình AI & Dịch Thuật Tự Động</h2>
-                  <p className="text-xs text-[#a6adc8]">Định tuyến 3 bậc (TM/Glossary → 1-Pass LLM → TEaR + MBR) với bộ lập lịch DAG chống sập nguồn.</p>
+              <div className="flex items-center justify-between border-b border-[#313244] pb-4">
+                <div className="flex items-center gap-3">
+                  <Sparkles className="w-6 h-6 text-[#cba6f7]" />
+                  <div>
+                    <h2 className="text-base font-bold text-[#cdd6f4]">Bước 3: Cấu Hình AI & Dịch Thuật Tự Động</h2>
+                    <p className="text-xs text-[#a6adc8]">Hệ thống bảo vệ bộ nhớ _room_for_copy chống tràn OOM, hỗ trợ GGUF qua CUDA Offload.</p>
+                  </div>
                 </div>
+                <button
+                  onClick={handleUnloadModel}
+                  disabled={isLoading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-[#313244] hover:bg-[#45475a] text-[#f38ba8] text-xs font-semibold rounded-lg transition-all"
+                  title="Giải phóng model khỏi VRAM/RAM"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Dọn VRAM
+                </button>
               </div>
 
+              {/* Hardware Real-time Status Banner */}
+              {systemSpecs && (
+                <div className="grid grid-cols-3 gap-3 p-3 bg-[#11111b] border border-[#313244] rounded-xl text-xs">
+                  <div className="flex items-center gap-2">
+                    <Cpu className="w-4 h-4 text-[#89b4fa]" />
+                    <div>
+                      <div className="font-semibold text-[#cdd6f4] truncate">{systemSpecs.gpu_name}</div>
+                      <div className="text-[11px] text-[#a6adc8]">
+                        VRAM trống: <span className="font-mono text-[#a6e3a1]">{(systemSpecs.free_vram_mb / 1024).toFixed(1)} GB</span> / {(systemSpecs.total_vram_mb / 1024).toFixed(1)} GB
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <HardDrive className="w-4 h-4 text-[#fab387]" />
+                    <div>
+                      <div className="font-semibold text-[#cdd6f4]">Bộ Nhớ Hệ Thống</div>
+                      <div className="text-[11px] text-[#a6adc8]">
+                        RAM trống: <span className="font-mono text-[#a6e3a1]">{(systemSpecs.free_ram_mb / 1024).toFixed(1)} GB</span> / {(systemSpecs.total_ram_mb / 1024).toFixed(1)} GB
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Zap className="w-4 h-4 text-[#f9e2af]" />
+                    <div>
+                      <div className="font-semibold text-[#cdd6f4]">Chống Tràn OOM</div>
+                      <div className="text-[11px] text-[#a6adc8]">
+                        {systemSpecs.swap_total_mb === 0 ? (
+                          <span className="text-[#f9e2af] font-medium">Swap: 0B (Kích hoạt bảo vệ nghiêm ngặt)</span>
+                        ) : (
+                          <span>Swap: {(systemSpecs.swap_free_mb / 1024).toFixed(1)} GB</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Engine Selector */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="text-xs font-semibold text-[#bac2de]">Động cơ suy luận (Inference Engine)</label>
@@ -366,18 +511,167 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
+              {/* GGUF Model Configuration */}
+              {aiEngine === 'llama.cpp' && (
+                <div className="flex flex-col gap-3 p-4 bg-[#11111b] border border-[#313244] rounded-xl">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-[#bac2de]">Đường dẫn tệp Model GGUF (.gguf)</label>
+                    <input
+                      type="text"
+                      value={modelPath}
+                      onChange={(e) => setModelPath(e.target.value)}
+                      placeholder="/duong/dan/toi/model.gguf"
+                      className="w-full bg-[#181825] border border-[#313244] rounded-xl px-4 py-2.5 text-xs text-[#cdd6f4] font-mono focus:outline-none focus:border-[#89b4fa]"
+                    />
+                  </div>
+
+                  {/* Detected models suggestions */}
+                  {systemSpecs?.detected_models && systemSpecs.detected_models.length > 0 && (
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-[11px] text-[#a6adc8]">Tệp model phát hiện được trong hệ thống:</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {systemSpecs.detected_models.map((m, idx) => (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => setModelPath(m.path)}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-mono border transition-all ${
+                              modelPath === m.path
+                                ? 'bg-[#89b4fa]/20 border-[#89b4fa] text-[#89b4fa]'
+                                : 'bg-[#181825] border-[#313244] text-[#a6adc8] hover:text-[#cdd6f4]'
+                            }`}
+                          >
+                            {m.name} ({(m.size_mb / 1024).toFixed(1)} GB)
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* External llama-server URL alternative */}
+                  <div className="flex flex-col gap-1.5 pt-2 border-t border-[#313244]">
+                    <label className="text-xs font-semibold text-[#bac2de]">Hoặc kết nối máy chủ llama-server bên ngoài (OpenAI API)</label>
+                    <input
+                      type="text"
+                      value={serverUrl}
+                      onChange={(e) => setServerUrl(e.target.value)}
+                      placeholder="http://localhost:8080/v1 (Để trống nếu chạy tệp GGUF trực tiếp)"
+                      className="w-full bg-[#181825] border border-[#313244] rounded-xl px-4 py-2 text-xs text-[#cdd6f4] font-mono focus:outline-none focus:border-[#89b4fa]"
+                    />
+                  </div>
+
+                  {/* OOM Assessment Card */}
+                  {modelAssessment && (
+                    <div
+                      className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs ${
+                        modelAssessment.status === 'oom_risk'
+                          ? 'bg-[#f38ba8]/10 border-[#f38ba8]/30 text-[#f38ba8]'
+                          : modelAssessment.status === 'safe_full_gpu'
+                          ? 'bg-[#a6e3a1]/10 border-[#a6e3a1]/30 text-[#a6e3a1]'
+                          : 'bg-[#89b4fa]/10 border-[#89b4fa]/30 text-[#89b4fa]'
+                      }`}
+                    >
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="font-semibold">Đánh Giá Bộ Nhớ Khả Dụng:</div>
+                        <div>{modelAssessment.message}</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Advanced inference parameters */}
+                  <div className="grid grid-cols-4 gap-3 pt-2 border-t border-[#313244]">
+                    <div>
+                      <label className="text-[11px] font-semibold text-[#bac2de]">GPU Offload (Layers)</label>
+                      <input
+                        type="number"
+                        value={nGpuLayers}
+                        onChange={(e) => setNGpuLayers(parseInt(e.target.value) || 0)}
+                        className="w-full mt-1 bg-[#181825] border border-[#313244] rounded-lg px-2.5 py-1.5 text-xs text-[#cdd6f4]"
+                        title="-1 để tự động tối ưu hóa cho VRAM"
+                      />
+                      <span className="text-[10px] text-[#6c7086]">-1: Tự động</span>
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-[#bac2de]">Ngữ Cảnh (n_ctx)</label>
+                      <select
+                        value={nCtx}
+                        onChange={(e) => setNCtx(parseInt(e.target.value))}
+                        className="w-full mt-1 bg-[#181825] border border-[#313244] rounded-lg px-2.5 py-1.5 text-xs text-[#cdd6f4]"
+                      >
+                        <option value={1024}>1024 (Tiết kiệm RAM nhất)</option>
+                        <option value={2048}>2048 (Khuyên dùng)</option>
+                        <option value={4096}>4096 (Ngữ cảnh dài)</option>
+                      </select>
+                      <span className="text-[10px] text-[#6c7086]">Giảm để chống OOM</span>
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-[#bac2de]">Nhiệt Độ (Temp)</label>
+                      <input
+                        type="number"
+                        step="0.05"
+                        value={temperature}
+                        onChange={(e) => setTemperature(parseFloat(e.target.value) || 0.2)}
+                        className="w-full mt-1 bg-[#181825] border border-[#313244] rounded-lg px-2.5 py-1.5 text-xs text-[#cdd6f4]"
+                      />
+                      <span className="text-[10px] text-[#6c7086]">0.2: Ổn định</span>
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-[#bac2de]">Lô Dịch (Câu/Đợt)</label>
+                      <input
+                        type="number"
+                        value={batchLimit}
+                        onChange={(e) => setBatchLimit(parseInt(e.target.value) || 20)}
+                        className="w-full mt-1 bg-[#181825] border border-[#313244] rounded-lg px-2.5 py-1.5 text-xs text-[#cdd6f4]"
+                      />
+                      <span className="text-[10px] text-[#6c7086]">Giới hạn an toàn</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Start Button */}
               <button
                 onClick={handleStartAi}
                 disabled={isLoading}
                 className="flex items-center justify-center gap-2 px-5 py-3 bg-gradient-to-r from-[#cba6f7] to-[#89b4fa] hover:opacity-90 text-[#11111b] text-xs font-bold rounded-xl transition-all shadow-lg shadow-[#cba6f7]/20 disabled:opacity-50"
               >
                 <Sparkles className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-                Bắt Đầu Dịch Tự Động
+                {isLoading ? 'Đang Dịch Bằng GGUF...' : 'Bắt Đầu Dịch Tự Động'}
               </button>
 
-              {translatedProgress > 0 && (
+              {/* Live Translation Progress Details */}
+              {liveProgress && liveProgress.is_running && (
+                <div className="flex flex-col gap-2.5 p-4 bg-[#11111b] border border-[#89b4fa]/30 rounded-xl text-xs">
+                  <div className="flex justify-between items-center text-[#cdd6f4]">
+                    <span className="font-semibold">Tiến độ đợt dịch:</span>
+                    <span className="font-mono text-[#89b4fa]">
+                      {liveProgress.current} / {liveProgress.total} câu (
+                      {liveProgress.total > 0 ? Math.round((liveProgress.current / liveProgress.total) * 100) : 0}%)
+                    </span>
+                  </div>
+                  <div className="w-full bg-[#181825] rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className="bg-[#89b4fa] h-full transition-all duration-300"
+                      style={{
+                        width: `${
+                          liveProgress.total > 0 ? (liveProgress.current / liveProgress.total) * 100 : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                  {liveProgress.current_source && (
+                    <div className="flex flex-col gap-1 mt-1 font-mono text-[11px]">
+                      <div className="text-[#a6adc8] truncate">Nguồn: {liveProgress.current_source}</div>
+                      <div className="text-[#a6e3a1] truncate">Đang sinh: {liveProgress.current_target || '...'}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {translatedProgress > 0 && !isLoading && (
                 <div className="flex items-center justify-between p-4 bg-[#11111b] border border-[#a6e3a1]/30 rounded-xl">
-                  <span className="text-xs text-[#cdd6f4]">Đã dịch thành công câu thoại:</span>
+                  <span className="text-xs text-[#cdd6f4]">Đã dịch thành công tổng cộng:</span>
                   <span className="text-sm font-bold text-[#a6e3a1]">{translatedProgress} câu thoại</span>
                 </div>
               )}
