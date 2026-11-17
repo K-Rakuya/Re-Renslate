@@ -1,0 +1,19 @@
+[package]
+name = "renloc-pyext"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "renloc_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py312"] }
+renloc-rpa = { path = "../renloc-rpa" }
+renloc-shaper = { path = "../renloc-shaper" }
+renloc-db = { path = "../renloc-db" }
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

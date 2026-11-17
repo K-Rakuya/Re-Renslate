@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "renloc_native"
+version = "0.1.0"
+description = "Native Rust extension for Renslate Ren'Py local localization system"
+requires-python = ">=3.12"
+readme = "README.md"
+authors = [{ name = "Renslate Core Team" }]
+license = { text = "MIT OR Apache-2.0" }
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "renloc_native"
+features = ["pyo3/extension-module", "pyo3/abi3-py312"]

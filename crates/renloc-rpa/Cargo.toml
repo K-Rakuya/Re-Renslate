@@ -1,0 +1,18 @@
+[package]
+name = "renloc-rpa"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+memmap2 = "0.9"
+flate2 = "1.0"
+byteorder = "1.5"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+regex = "1.10"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.10"

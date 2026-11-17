@@ -1,0 +1,18 @@
+[package]
+name = "renloc-db"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled", "vtab", "backup", "modern_sqlite"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.10"

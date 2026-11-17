@@ -1,0 +1,18 @@
+[package]
+name = "renloc-shaper"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+rustybuzz = "0.14"
+unicode-bidi = "0.3"
+unicode-normalization = "0.1"
+ttf-parser = "0.25"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.10"
