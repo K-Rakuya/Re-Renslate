@@ -11,6 +11,8 @@ r2d2 = "0.8"
 r2d2_sqlite = "0.24"
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.38", features = ["rt", "sync"] }
 
 [dev-dependencies]
 tempfile = "3.10"
+tokio = { version = "1.38", features = ["full", "macros"] }

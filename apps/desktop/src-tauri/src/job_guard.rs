@@ -99,6 +99,22 @@ impl ProcessGuard {
         // Ensure child runs in its own process group (setpgid(0, 0))
         cmd.process_group(0);
 
+        // Keep read_fd open across exec so the child can read from it
+        unsafe {
+            libc::fcntl(read_fd, libc::F_SETFD, 0);
+        }
+        cmd.env("RENSLATE_DEATH_PIPE_FD", read_fd.to_string());
+
+        // On Linux, use prctl(PR_SET_PDEATHSIG, SIGKILL) in pre_exec so kernel auto-kills
+        // child if parent crashes or is killed with SIGKILL
+        #[cfg(target_os = "linux")]
+        unsafe {
+            cmd.pre_exec(move || {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+
         let child = cmd.spawn().map_err(|e| {
             unsafe {
                 libc::close(read_fd);
@@ -119,6 +135,10 @@ impl ProcessGuard {
 
     #[cfg(windows)]
     pub fn spawn_guarded(cmd: &mut std::process::Command) -> Result<(Child, Self), GuardError> {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW = 0x08000000
+        cmd.creation_flags(0x08000000);
+
         let child = cmd.spawn().map_err(|e| GuardError::System(e.to_string()))?;
         let guard = Self::new(&child)?;
         Ok((child, guard))
@@ -142,11 +162,24 @@ impl ProcessGuard {
             let pgid = -pid.as_raw();
             let _ = kill(Pid::from_raw(pgid), Signal::SIGTERM);
 
-            // Wait with timeout
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            // Send SIGKILL if still running
-            let _ = kill(Pid::from_raw(pgid), Signal::SIGKILL);
-            info!("POSIX process guard terminated group {}", pgid);
+            // Wait with timeout up to 3000ms as specified in architecture design
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3000);
+            let mut still_alive = true;
+            while std::time::Instant::now() < deadline {
+                if kill(pid, None).is_err() {
+                    still_alive = false;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+
+            if still_alive {
+                // Send SIGKILL to the entire process group if still running
+                let _ = kill(Pid::from_raw(pgid), Signal::SIGKILL);
+                info!("POSIX process guard sent SIGKILL to group {}", pgid);
+            } else {
+                info!("POSIX process group {} exited gracefully after SIGTERM", pgid);
+            }
         }
 
         #[cfg(windows)]
@@ -185,5 +218,17 @@ mod tests {
         // Child should have been killed by SIGTERM / SIGKILL
         let status = child.wait().expect("Failed to wait on killed child");
         assert!(!status.success());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_death_pipe_environment_set() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("echo $RENSLATE_DEATH_PIPE_FD");
+
+        let (mut child, guard) = ProcessGuard::spawn_guarded(&mut cmd).expect("Failed to spawn");
+        let status = child.wait().unwrap();
+        assert!(status.success());
+        drop(guard);
     }
 }

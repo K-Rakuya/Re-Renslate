@@ -16,8 +16,11 @@ pub enum DbError {
     Sqlite(#[from] rusqlite::Error),
     #[error("Database path not found: {0}")]
     NotFound(String),
+    #[error("Async task join error: {0}")]
+    AsyncJoin(String),
 }
 
+#[derive(Clone)]
 pub struct ReadOnlyPool {
     pool: Pool<SqliteConnectionManager>,
     db_path: PathBuf,
