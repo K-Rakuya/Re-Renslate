@@ -118,7 +118,7 @@ SCHEMA_DAG_TASKS = """
 CREATE TABLE IF NOT EXISTS dag_tasks (
     task_id TEXT PRIMARY KEY,
     task_type TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'RETRY')),
+    status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING', 'LEASED', 'DRAFTED', 'REFINED', 'QE_SCORED', 'COMMITTED', 'RUNNING', 'COMPLETED', 'FAILED', 'RETRY')),
     priority INTEGER NOT NULL DEFAULT 0,
     unit_id INTEGER REFERENCES translation_units(id) ON DELETE CASCADE,
     dependencies TEXT,
@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS dag_tasks (
     retries INTEGER NOT NULL DEFAULT 0,
     max_retries INTEGER NOT NULL DEFAULT 3,
     worker_id TEXT,
+    lease_expires_at TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
