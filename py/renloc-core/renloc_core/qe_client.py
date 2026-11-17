@@ -56,6 +56,45 @@ class IsolatedQEClient:
             return res["scores"]
         return []
 
+    def raw_call(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lock:
+            if self._proc is None or self._proc.poll() is not None:
+                self._start_worker()
+
+            line = json.dumps(req) + "\n"
+            assert self._proc.stdin is not None
+            assert self._proc.stdout is not None
+
+            self._proc.stdin.write(line)
+            self._proc.stdin.flush()
+
+            resp_line = self._proc.stdout.readline()
+            if not resp_line:
+                raise RuntimeError("QE worker terminated unexpectedly or returned EOF.")
+            return json.loads(resp_line.strip())
+
+    def send_raw_line(self, raw_line: str) -> Dict[str, Any]:
+        with self._lock:
+            if self._proc is None or self._proc.poll() is not None:
+                self._start_worker()
+
+            if not raw_line.endswith("\n"):
+                raw_line += "\n"
+            assert self._proc.stdin is not None
+            assert self._proc.stdout is not None
+
+            self._proc.stdin.write(raw_line)
+            self._proc.stdin.flush()
+
+            resp_line = self._proc.stdout.readline()
+            if not resp_line:
+                raise RuntimeError("QE worker terminated unexpectedly or returned EOF.")
+            return json.loads(resp_line.strip())
+
+    @property
+    def pid(self) -> Optional[int]:
+        return self._proc.pid if self._proc else None
+
     def _call(self, method: str, params: Dict[str, Any]) -> Any:
         with self._lock:
             if self._proc is None or self._proc.poll() is not None:

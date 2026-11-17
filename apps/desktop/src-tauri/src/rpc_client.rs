@@ -100,3 +100,42 @@ mod hex {
         s
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_csprng_256bit_token_generation() {
+        let client1 = RpcClient::new(PathBuf::from("/tmp/test1.sock"));
+        let client2 = RpcClient::new(PathBuf::from("/tmp/test2.sock"));
+
+        // 256-bit hex token is exactly 64 characters long
+        assert_eq!(client1.session_token.len(), 64);
+        assert_eq!(client2.session_token.len(), 64);
+
+        // Tokens must be distinct (high entropy CSPRNG)
+        assert_ne!(client1.session_token, client2.session_token);
+
+        // All characters must be valid lowercase hex
+        assert!(client1.session_token.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_msgpack_rpc_serialization() {
+        let envelope = RpcEnvelope {
+            session_token: "abcd1234ef567890abcd1234ef567890abcd1234ef567890abcd1234ef567890".to_string(),
+            method: "ping".to_string(),
+            payload: serde_json::json!({"test": true}),
+        };
+
+        let encoded = rmp_serde::to_vec_named(&envelope).expect("Failed to encode envelope");
+        assert!(!encoded.is_empty());
+
+        let decoded: RpcEnvelope<serde_json::Value> =
+            rmp_serde::from_slice(&encoded).expect("Failed to decode envelope");
+        assert_eq!(decoded.session_token, envelope.session_token);
+        assert_eq!(decoded.method, "ping");
+        assert_eq!(decoded.payload["test"], true);
+    }
+}

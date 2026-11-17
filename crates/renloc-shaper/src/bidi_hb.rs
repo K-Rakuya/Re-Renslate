@@ -5,6 +5,7 @@
 use rustybuzz::{Face, UnicodeBuffer};
 use thiserror::Error;
 use unicode_bidi::BidiInfo;
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug, Error)]
 pub enum ShapeError {
@@ -35,13 +36,16 @@ impl TextShaper {
         let upem = face.units_per_em() as f32;
         let scale_factor = font_size_pt / upem;
 
+        // Normalize text to Unicode NFC form for correct Vietnamese glyph matching
+        let text_nfc: String = text.nfc().collect();
+
         // Bidi analysis
-        let bidi_info = BidiInfo::new(text, None);
+        let bidi_info = BidiInfo::new(&text_nfc, None);
         let mut total_advance = 0.0f32;
         let mut glyph_count = 0;
 
         for para in &bidi_info.paragraphs {
-            let line = &text[para.range.clone()];
+            let line = &text_nfc[para.range.clone()];
             let mut buffer = UnicodeBuffer::new();
             buffer.push_str(line);
             buffer.guess_segment_properties();

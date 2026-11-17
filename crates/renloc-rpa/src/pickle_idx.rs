@@ -86,6 +86,10 @@ impl<'a> InertPickleVm<'a> {
                 0x80 => {
                     let _proto = self.read_u8()?;
                 }
+                // FRAME (0x95) - Python protocol 4+ frame indicator
+                0x95 => {
+                    let _frame_len = self.reader.read_u64::<LittleEndian>().map_err(|_| PickleError::UnexpectedEof(pos))?;
+                }
                 // EMPTY_DICT (0x7d, '}')
                 b'}' => {
                     self.stack.push(PickleValue::Dict(HashMap::new()));
@@ -156,8 +160,15 @@ impl<'a> InertPickleVm<'a> {
                     self.reader.read_exact(&mut buf).map_err(|_| PickleError::UnexpectedEof(pos))?;
                     self.stack.push(PickleValue::Bytes(buf));
                 }
-                // SHORT_BINBYTES (0x8e)
+                // BINBYTES8 (0x8e) - 64-bit length bytes
                 0x8e => {
+                    let len = self.reader.read_u64::<LittleEndian>().map_err(|_| PickleError::UnexpectedEof(pos))? as usize;
+                    let mut buf = vec![0u8; len];
+                    self.reader.read_exact(&mut buf).map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    self.stack.push(PickleValue::Bytes(buf));
+                }
+                // SHORT_BINBYTES (0x43, 'C') - 8-bit length bytes
+                b'C' => {
                     let len = self.read_u8()? as usize;
                     let mut buf = vec![0u8; len];
                     self.reader.read_exact(&mut buf).map_err(|_| PickleError::UnexpectedEof(pos))?;

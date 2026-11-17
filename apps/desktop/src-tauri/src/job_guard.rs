@@ -5,7 +5,7 @@ use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{info, warn};
+use tracing::info;
 
 #[derive(Debug, Error)]
 pub enum GuardError {
@@ -81,6 +81,49 @@ impl ProcessGuard {
         })
     }
 
+    #[cfg(unix)]
+    pub fn spawn_guarded(cmd: &mut std::process::Command) -> Result<(Child, Self), GuardError> {
+        use std::os::unix::process::CommandExt;
+        use std::os::unix::io::FromRawFd;
+
+        // Create pipe for death-pipe detection
+        let mut pipe_fds = [0i32; 2];
+        let res = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
+        if res != 0 {
+            return Err(GuardError::System("Failed to create death-pipe".into()));
+        }
+
+        let read_fd = pipe_fds[0];
+        let write_fd = pipe_fds[1];
+
+        // Ensure child runs in its own process group (setpgid(0, 0))
+        cmd.process_group(0);
+
+        let child = cmd.spawn().map_err(|e| {
+            unsafe {
+                libc::close(read_fd);
+                libc::close(write_fd);
+            }
+            GuardError::System(e.to_string())
+        })?;
+
+        // In parent, close read end, keep write end (OwnedFd automatically closes on drop)
+        unsafe {
+            libc::close(read_fd);
+        }
+        let death_pipe_write = unsafe { std::os::unix::io::OwnedFd::from_raw_fd(write_fd) };
+
+        let guard = Self::new(&child, Some(death_pipe_write))?;
+        Ok((child, guard))
+    }
+
+    #[cfg(windows)]
+    pub fn spawn_guarded(cmd: &mut std::process::Command) -> Result<(Child, Self), GuardError> {
+        let child = cmd.spawn().map_err(|e| GuardError::System(e.to_string()))?;
+        let guard = Self::new(&child)?;
+        Ok((child, guard))
+    }
+
     pub fn terminate(&mut self) {
         if self.cleaned.swap(true, Ordering::SeqCst) {
             return;
@@ -116,5 +159,31 @@ impl ProcessGuard {
 impl Drop for ProcessGuard {
     fn drop(&mut self) {
         self.terminate();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    #[cfg(unix)]
+    fn test_process_guard_terminates_child_on_drop() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("60");
+
+        let (mut child, guard) = ProcessGuard::spawn_guarded(&mut cmd).expect("Failed to spawn guarded sleep");
+        let _pid = child.id();
+
+        // Check child is running
+        assert_eq!(child.try_wait().unwrap(), None);
+
+        // Drop guard, triggering terminate()
+        drop(guard);
+
+        // Child should have been killed by SIGTERM / SIGKILL
+        let status = child.wait().expect("Failed to wait on killed child");
+        assert!(!status.success());
     }
 }

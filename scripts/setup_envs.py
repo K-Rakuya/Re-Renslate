@@ -36,14 +36,16 @@ def setup_virtualenvs():
     # 1. Setup .venvs/core with Python 3.12
     print("[*] Creating .venvs/core with Python 3.12...")
     subprocess.run([uv, "venv", str(CORE_VENV), "--python", "3.12", "--seed"], check=True)
-    core_pip = str(CORE_VENV / "bin" / "pip")
     core_python = str(CORE_VENV / "bin" / "python")
+    print("[*] Installing renloc-core dependencies into .venvs/core...")
+    subprocess.run([uv, "pip", "install", "--python", core_python, "-e", str(REPO_ROOT / "py" / "renloc-core")], check=True)
     
     # 2. Setup .venvs/qe with Python 3.12
     print("[*] Creating .venvs/qe with Python 3.12...")
     subprocess.run([uv, "venv", str(QE_VENV), "--python", "3.12", "--seed"], check=True)
-    qe_pip = str(QE_VENV / "bin" / "pip")
     qe_python = str(QE_VENV / "bin" / "python")
+    print("[*] Installing renloc-qe dependencies into .venvs/qe...")
+    subprocess.run([uv, "pip", "install", "--python", qe_python, "-e", str(REPO_ROOT / "py" / "renloc-qe")], check=True)
 
     print("[+] Virtualenvs initialized successfully:")
     print(f"    - Core: {CORE_VENV}")
