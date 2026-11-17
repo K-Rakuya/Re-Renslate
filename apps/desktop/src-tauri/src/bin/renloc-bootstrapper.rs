@@ -11,8 +11,14 @@ fn main() {
 
     // Look for python runtime in resources/ or system python3
     let current_exe = env::current_exe().unwrap_or_default();
-    let app_dir = current_exe.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let bundled_python = app_dir.join("resources").join("runtime").join("bin").join("python3");
+    let app_dir = current_exe
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let bundled_python = app_dir
+        .join("resources")
+        .join("runtime")
+        .join("bin")
+        .join("python3");
 
     let python_bin = if bundled_python.exists() {
         bundled_python

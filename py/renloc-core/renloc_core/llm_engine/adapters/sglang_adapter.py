@@ -333,3 +333,19 @@ class SglangConstraintProcessor(_BaseCustomLogitProcessor):
 # Register default safe processor
 SglangProcessorRegistry.register("SglangConstraintProcessor", SglangConstraintProcessor)
 SglangProcessorRegistry.register("RenlocTagConstraintProcessor", SglangConstraintProcessor)
+
+
+def patch_sglang_cve_2026_7304(security_proxy: SglangSecurityProxy) -> bool:
+    """
+    In-memory monkey-patch for SGLang v0.5.11–v0.5.12+ installations.
+    Intercepts CustomLogitProcessor.from_str() globally, forcing HMAC verification
+    and prohibiting raw dill.loads() calls.
+    Returns True if patched, False if sglang is not installed.
+    """
+    try:
+        import sglang.srt.sampling.custom_logit_processor as clp
+        clp.CustomLogitProcessor.from_str = lambda s: SglangConstraintProcessor.from_str(s, security_proxy)
+        logger.info("Successfully applied CVE-2026-7304 patch to SGLang CustomLogitProcessor.from_str.")
+        return True
+    except (ImportError, AttributeError):
+        return False

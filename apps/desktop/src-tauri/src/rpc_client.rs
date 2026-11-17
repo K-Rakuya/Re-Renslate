@@ -140,9 +140,13 @@ impl RpcClient {
 
         let response: RpcResponse<Resp> = rmp_serde::from_slice(&resp_buf)?;
         if response.ok {
-            Ok(response.result.expect("Expected result on successful response"))
+            Ok(response
+                .result
+                .expect("Expected result on successful response"))
         } else {
-            Err(RpcError::Remote(response.error.unwrap_or_else(|| "Unknown error".into())))
+            Err(RpcError::Remote(
+                response.error.unwrap_or_else(|| "Unknown error".into()),
+            ))
         }
     }
 
@@ -176,9 +180,13 @@ impl RpcClient {
 
         let response: RpcResponse<Resp> = rmp_serde::from_slice(&resp_buf)?;
         if response.ok {
-            Ok(response.result.expect("Expected result on successful response"))
+            Ok(response
+                .result
+                .expect("Expected result on successful response"))
         } else {
-            Err(RpcError::Remote(response.error.unwrap_or_else(|| "Unknown error".into())))
+            Err(RpcError::Remote(
+                response.error.unwrap_or_else(|| "Unknown error".into()),
+            ))
         }
     }
 }
@@ -244,7 +252,8 @@ mod tests {
     #[test]
     fn test_msgpack_rpc_serialization() {
         let envelope = RpcEnvelope {
-            session_token: "abcd1234ef567890abcd1234ef567890abcd1234ef567890abcd1234ef567890".to_string(),
+            session_token: "abcd1234ef567890abcd1234ef567890abcd1234ef567890abcd1234ef567890"
+                .to_string(),
             method: "ping".to_string(),
             payload: serde_json::json!({"test": true}),
         };
@@ -316,12 +325,19 @@ mod tests {
 
         // Client with valid token
         let client = RpcClient::with_token(sock_path.clone(), expected_token_hex.clone());
-        let res: serde_json::Value = client.call("echo", serde_json::json!({"status": "active"})).await.unwrap();
+        let res: serde_json::Value = client
+            .call("echo", serde_json::json!({"status": "active"}))
+            .await
+            .unwrap();
         assert_eq!(res["status"], "active");
 
         // Client with invalid token
-        let bad_client = RpcClient::with_token(sock_path.clone(), "0000000000000000000000000000000000000000000000000000000000000000".into());
-        let bad_res: Result<serde_json::Value, RpcError> = bad_client.call("echo", serde_json::json!({})).await;
+        let bad_client = RpcClient::with_token(
+            sock_path.clone(),
+            "0000000000000000000000000000000000000000000000000000000000000000".into(),
+        );
+        let bad_res: Result<serde_json::Value, RpcError> =
+            bad_client.call("echo", serde_json::json!({})).await;
         assert!(bad_res.is_err());
     }
 }

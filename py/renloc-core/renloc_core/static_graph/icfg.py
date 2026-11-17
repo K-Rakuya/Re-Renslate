@@ -224,6 +224,8 @@ class ICFGBuilder:
 
         # Track call sites needing return wiring: (callee_label, callee_ctx) -> list of (return_continuation_node_id, caller_ctx)
         call_return_wiring: Dict[Tuple[str, CallContext], List[Tuple[str, CallContext]]] = {}
+        # Direct call site map: call_site_id -> (ret_target_id, caller_ctx)
+        call_site_returns: Dict[str, Tuple[str, CallContext]] = {}
 
         while worklist:
             lbl, ctx = worklist.pop(0)

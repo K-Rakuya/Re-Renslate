@@ -42,7 +42,10 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
     }
 
     // 1. RPA-1.0 Detection (ZLIB compressed index file signature 0x78 0x9c or paired .rpi)
-    if bytes.starts_with(&[0x78, 0x9c]) || bytes.starts_with(&[0x78, 0x01]) || bytes.starts_with(&[0x78, 0xda]) {
+    if bytes.starts_with(&[0x78, 0x9c])
+        || bytes.starts_with(&[0x78, 0x01])
+        || bytes.starts_with(&[0x78, 0xda])
+    {
         return Ok(RpaHeaderInfo {
             version: RpaVersion::Rpa1,
             index_offset: 0,
@@ -52,7 +55,10 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
     }
 
     // Convert leading line to string for ASCII header parsing
-    let line_end = bytes.iter().position(|&b| b == b'\n').unwrap_or(bytes.len().min(128));
+    let line_end = bytes
+        .iter()
+        .position(|&b| b == b'\n')
+        .unwrap_or(bytes.len().min(128));
     let line = &bytes[..line_end];
     let line_str = String::from_utf8_lossy(line);
     let trimmed = line_str.trim_end_matches(['\r', '\n']);
@@ -61,7 +67,9 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
     if let Some(rest) = trimmed.strip_prefix("RPA-2.0 ") {
         let parts: Vec<&str> = rest.split_whitespace().collect();
         if parts.is_empty() {
-            return Err(HeaderError::HexParseError("Missing index offset in RPA-2.0 header".to_string()));
+            return Err(HeaderError::HexParseError(
+                "Missing index offset in RPA-2.0 header".to_string(),
+            ));
         }
         let index_offset = u64::from_str_radix(parts[0], 16)
             .map_err(|e| HeaderError::HexParseError(format!("Invalid RPA-2.0 offset: {}", e)))?;
@@ -77,7 +85,9 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
     if let Some(rest) = trimmed.strip_prefix("RPA-3.0 ") {
         let parts: Vec<&str> = rest.split_whitespace().collect();
         if parts.len() < 2 {
-            return Err(HeaderError::HexParseError("Missing offset or key in RPA-3.0 header".to_string()));
+            return Err(HeaderError::HexParseError(
+                "Missing offset or key in RPA-3.0 header".to_string(),
+            ));
         }
         let index_offset = u64::from_str_radix(parts[0], 16)
             .map_err(|e| HeaderError::HexParseError(format!("Invalid RPA-3.0 offset: {}", e)))?;
@@ -102,7 +112,10 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
     // 4. RPA-3.2
     if let Some(rest) = trimmed.strip_prefix("RPA-3.2 ") {
         let parts: Vec<&str> = rest.split_whitespace().collect();
-        let index_offset = parts.first().and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(0);
+        let index_offset = parts
+            .first()
+            .and_then(|s| u64::from_str_radix(s, 16).ok())
+            .unwrap_or(0);
         let key = parts.get(1).and_then(|s| u32::from_str_radix(s, 16).ok());
         return Ok(RpaHeaderInfo {
             version: RpaVersion::Rpa32,
@@ -115,7 +128,10 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
     // 5. RPA-4.0
     if let Some(rest) = trimmed.strip_prefix("RPA-4.0 ") {
         let parts: Vec<&str> = rest.split_whitespace().collect();
-        let index_offset = parts.first().and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(0);
+        let index_offset = parts
+            .first()
+            .and_then(|s| u64::from_str_radix(s, 16).ok())
+            .unwrap_or(0);
         let key = parts.get(1).and_then(|s| u32::from_str_radix(s, 16).ok());
         return Ok(RpaHeaderInfo {
             version: RpaVersion::Rpa40,
@@ -128,7 +144,10 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
     // 6. ALT-1.0
     if let Some(rest) = trimmed.strip_prefix("ALT-1.0 ") {
         let parts: Vec<&str> = rest.split_whitespace().collect();
-        let index_offset = parts.first().and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(0);
+        let index_offset = parts
+            .first()
+            .and_then(|s| u64::from_str_radix(s, 16).ok())
+            .unwrap_or(0);
         let key = parts.get(1).and_then(|s| u32::from_str_radix(s, 16).ok());
         return Ok(RpaHeaderInfo {
             version: RpaVersion::Alt10,
@@ -176,5 +195,7 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
         }
     }
 
-    Err(HeaderError::UnrecognizedSignature(bytes[..bytes.len().min(16)].to_vec()))
+    Err(HeaderError::UnrecognizedSignature(
+        bytes[..bytes.len().min(16)].to_vec(),
+    ))
 }

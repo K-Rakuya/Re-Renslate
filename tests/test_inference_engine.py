@@ -519,3 +519,41 @@ class TestSemanticRouter:
         assert len(res.candidates) >= 4
         assert res.score is not None
         assert res.score >= 0.80
+
+    def test_vram_split_into_adaptive_batches(self):
+        """VramMonitor partitions requests into safe adaptive batches."""
+        monitor = VramMonitor(
+            mock_mode=True,
+            mock_free_bytes=2 * 1024 * 1024 * 1024,
+            min_room_for_copy_bytes=512 * 1024 * 1024,
+        )
+        items = list(range(50))
+        batches = monitor.split_into_adaptive_batches(items, max_batch_size=10)
+        assert len(batches) > 0
+        flattened = [item for batch in batches for item in batch]
+        assert flattened == items
+
+    def test_dag_scheduler_committed_guard(self, tmp_path: Path):
+        """Once COMMITTED, tasks resist regression without force=True."""
+        db_file = tmp_path / "guard_test.db"
+        sched = DagScheduler(str(db_file))
+        task = sched.submit_translation_task("Immortal text", "h_imm", "c_imm", "v1", "m1")
+        sched.lease_tasks("worker-x")
+        sched.transition_state(task.task_id, TaskStatus.COMMITTED, {"target_text": "Done"})
+
+        # Attempt to transition backwards without force
+        t_after = sched.transition_state(task.task_id, TaskStatus.DRAFTED, force=False)
+        assert t_after.status == TaskStatus.COMMITTED
+
+        # Transition with force
+        t_forced = sched.transition_state(task.task_id, TaskStatus.DRAFTED, force=True)
+        assert t_forced.status == TaskStatus.DRAFTED
+        sched.close()
+
+    def test_sglang_runtime_monkey_patch(self):
+        """Verifies patch_sglang_cve_2026_7304 safely returns boolean without crashing."""
+        from renloc_core.llm_engine.adapters.sglang_adapter import patch_sglang_cve_2026_7304
+        proxy = SglangSecurityProxy()
+        # In test environment where sglang may not be installed, returns False cleanly
+        result = patch_sglang_cve_2026_7304(proxy)
+        assert isinstance(result, bool)

@@ -2,9 +2,9 @@
 //! Pure Rust inert pickle opcode virtual machine.
 //! Safely decodes RPA index dictionaries without executing any Python code or invoking unpicklers.
 
+use byteorder::{LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
-use byteorder::{LittleEndian, ReadBytesExt};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -89,7 +89,10 @@ impl<'a> InertPickleVm<'a> {
                 }
                 // FRAME (0x95) - Python protocol 4+ frame indicator
                 0x95 => {
-                    let _frame_len = self.reader.read_u64::<LittleEndian>().map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    let _frame_len = self
+                        .reader
+                        .read_u64::<LittleEndian>()
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?;
                 }
                 // EMPTY_DICT (0x7d, '}')
                 b'}' => {
@@ -113,7 +116,10 @@ impl<'a> InertPickleVm<'a> {
                 }
                 // BININT (0x4a, 'J')
                 b'J' => {
-                    let val = self.reader.read_i32::<LittleEndian>().map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    let val = self
+                        .reader
+                        .read_i32::<LittleEndian>()
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?;
                     self.stack.push(PickleValue::Int(val as i64));
                 }
                 // BININT1 (0x4b, 'K')
@@ -123,8 +129,45 @@ impl<'a> InertPickleVm<'a> {
                 }
                 // BININT2 (0x4d, 'M')
                 b'M' => {
-                    let val = self.reader.read_u16::<LittleEndian>().map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    let val = self
+                        .reader
+                        .read_u16::<LittleEndian>()
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?;
                     self.stack.push(PickleValue::Int(val as i64));
+                }
+                // INT (0x49, 'I') - Decimal integer string terminated by \n
+                b'I' => {
+                    let mut s = String::new();
+                    loop {
+                        let b = self.read_u8()?;
+                        if b == b'\n' {
+                            break;
+                        }
+                        s.push(b as char);
+                    }
+                    let trimmed = s.trim_end_matches(['\r', '\n']);
+                    let val = if trimmed == "01" {
+                        1i64
+                    } else if trimmed == "00" {
+                        0i64
+                    } else {
+                        trimmed.parse::<i64>().map_err(|_| PickleError::MalformedIndex)?
+                    };
+                    self.stack.push(PickleValue::Int(val));
+                }
+                // LONG (0x4c, 'L') - Long integer string terminated by \n
+                b'L' => {
+                    let mut s = String::new();
+                    loop {
+                        let b = self.read_u8()?;
+                        if b == b'\n' {
+                            break;
+                        }
+                        s.push(b as char);
+                    }
+                    let trimmed = s.trim_end_matches(['\r', '\n', 'L']);
+                    let val = trimmed.parse::<i64>().map_err(|_| PickleError::MalformedIndex)?;
+                    self.stack.push(PickleValue::Int(val));
                 }
                 // LONG1 (0x8a)
                 0x8a => {
@@ -134,15 +177,25 @@ impl<'a> InertPickleVm<'a> {
                 }
                 // LONG4 (0x8b)
                 0x8b => {
-                    let len = self.reader.read_u32::<LittleEndian>().map_err(|_| PickleError::UnexpectedEof(pos))? as usize;
+                    let len = self
+                        .reader
+                        .read_u32::<LittleEndian>()
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?
+                        as usize;
                     let val = self.read_long_bytes(len)?;
                     self.stack.push(PickleValue::Int(val));
                 }
                 // BINUNICODE (0x58, 'X')
                 b'X' => {
-                    let len = self.reader.read_u32::<LittleEndian>().map_err(|_| PickleError::UnexpectedEof(pos))? as usize;
+                    let len = self
+                        .reader
+                        .read_u32::<LittleEndian>()
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?
+                        as usize;
                     let mut buf = vec![0u8; len];
-                    self.reader.read_exact(&mut buf).map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    self.reader
+                        .read_exact(&mut buf)
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?;
                     let s = String::from_utf8(buf)?;
                     self.stack.push(PickleValue::String(s));
                 }
@@ -150,46 +203,109 @@ impl<'a> InertPickleVm<'a> {
                 0x8c => {
                     let len = self.read_u8()? as usize;
                     let mut buf = vec![0u8; len];
-                    self.reader.read_exact(&mut buf).map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    self.reader
+                        .read_exact(&mut buf)
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?;
                     let s = String::from_utf8(buf)?;
                     self.stack.push(PickleValue::String(s));
                 }
                 // BINBYTES (0x42, 'B')
                 b'B' => {
-                    let len = self.reader.read_u32::<LittleEndian>().map_err(|_| PickleError::UnexpectedEof(pos))? as usize;
+                    let len = self
+                        .reader
+                        .read_u32::<LittleEndian>()
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?
+                        as usize;
                     let mut buf = vec![0u8; len];
-                    self.reader.read_exact(&mut buf).map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    self.reader
+                        .read_exact(&mut buf)
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?;
                     self.stack.push(PickleValue::Bytes(buf));
                 }
                 // BINBYTES8 (0x8e) - 64-bit length bytes
                 0x8e => {
-                    let len = self.reader.read_u64::<LittleEndian>().map_err(|_| PickleError::UnexpectedEof(pos))? as usize;
+                    let len = self
+                        .reader
+                        .read_u64::<LittleEndian>()
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?
+                        as usize;
                     let mut buf = vec![0u8; len];
-                    self.reader.read_exact(&mut buf).map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    self.reader
+                        .read_exact(&mut buf)
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?;
                     self.stack.push(PickleValue::Bytes(buf));
                 }
                 // SHORT_BINBYTES (0x43, 'C') - 8-bit length bytes
                 b'C' => {
                     let len = self.read_u8()? as usize;
                     let mut buf = vec![0u8; len];
-                    self.reader.read_exact(&mut buf).map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    self.reader
+                        .read_exact(&mut buf)
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?;
                     self.stack.push(PickleValue::Bytes(buf));
                 }
                 // BINSTRING (0x54, 'T') - Python 2
                 b'T' => {
-                    let len = self.reader.read_u32::<LittleEndian>().map_err(|_| PickleError::UnexpectedEof(pos))? as usize;
+                    let len = self
+                        .reader
+                        .read_u32::<LittleEndian>()
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?
+                        as usize;
                     let mut buf = vec![0u8; len];
-                    self.reader.read_exact(&mut buf).map_err(|_| PickleError::UnexpectedEof(pos))?;
-                    let s = String::from_utf8(buf.clone()).unwrap_or_else(|_| String::from_utf8_lossy(&buf).to_string());
+                    self.reader
+                        .read_exact(&mut buf)
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    let s = String::from_utf8(buf.clone())
+                        .unwrap_or_else(|_| String::from_utf8_lossy(&buf).to_string());
                     self.stack.push(PickleValue::String(s));
                 }
                 // SHORT_BINSTRING (0x55, 'U') - Python 2
                 b'U' => {
                     let len = self.read_u8()? as usize;
                     let mut buf = vec![0u8; len];
-                    self.reader.read_exact(&mut buf).map_err(|_| PickleError::UnexpectedEof(pos))?;
-                    let s = String::from_utf8(buf.clone()).unwrap_or_else(|_| String::from_utf8_lossy(&buf).to_string());
+                    self.reader
+                        .read_exact(&mut buf)
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    let s = String::from_utf8(buf.clone())
+                        .unwrap_or_else(|_| String::from_utf8_lossy(&buf).to_string());
                     self.stack.push(PickleValue::String(s));
+                }
+                // STRING (0x53, 'S') - Single-line string terminated by \n
+                b'S' => {
+                    let mut s = String::new();
+                    loop {
+                        let b = self.read_u8()?;
+                        if b == b'\n' {
+                            break;
+                        }
+                        s.push(b as char);
+                    }
+                    let trimmed = s.trim_end_matches(['\r', '\n']);
+                    let unquoted = if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+                        || (trimmed.starts_with('"') && trimmed.ends_with('"'))
+                    {
+                        if trimmed.len() >= 2 {
+                            &trimmed[1..trimmed.len() - 1]
+                        } else {
+                            trimmed
+                        }
+                    } else {
+                        trimmed
+                    };
+                    self.stack.push(PickleValue::String(unquoted.to_string()));
+                }
+                // UNICODE (0x56, 'V') - Raw-unicode-escaped string terminated by \n
+                b'V' => {
+                    let mut s = String::new();
+                    loop {
+                        let b = self.read_u8()?;
+                        if b == b'\n' {
+                            break;
+                        }
+                        s.push(b as char);
+                    }
+                    let trimmed = s.trim_end_matches(['\r', '\n']);
+                    self.stack.push(PickleValue::String(trimmed.to_string()));
                 }
                 // TUPLE1 (0x85)
                 0x85 => {
@@ -283,6 +399,22 @@ impl<'a> InertPickleVm<'a> {
                     }
                     self.stack.push(PickleValue::Dict(map));
                 }
+                // PUT (0x70, 'p') - Protocol 0 decimal memo index terminated by \n
+                b'p' => {
+                    let mut s = String::new();
+                    loop {
+                        let b = self.read_u8()?;
+                        if b == b'\n' {
+                            break;
+                        }
+                        s.push(b as char);
+                    }
+                    let trimmed = s.trim_end_matches(['\r', '\n']);
+                    let idx = trimmed.parse::<u32>().map_err(|_| PickleError::MalformedIndex)?;
+                    if let Some(top) = self.stack.last() {
+                        self.memo.insert(idx, top.clone());
+                    }
+                }
                 // BINPUT (0x71, 'q')
                 b'q' => {
                     let idx = self.read_u8()? as u32;
@@ -292,10 +424,32 @@ impl<'a> InertPickleVm<'a> {
                 }
                 // LONG_BINPUT (0x72, 'r')
                 b'r' => {
-                    let idx = self.reader.read_u32::<LittleEndian>().map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    let idx = self
+                        .reader
+                        .read_u32::<LittleEndian>()
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?;
                     if let Some(top) = self.stack.last() {
                         self.memo.insert(idx, top.clone());
                     }
+                }
+                // GET (0x67, 'g') - Protocol 0 decimal memo index terminated by \n
+                b'g' => {
+                    let mut s = String::new();
+                    loop {
+                        let b = self.read_u8()?;
+                        if b == b'\n' {
+                            break;
+                        }
+                        s.push(b as char);
+                    }
+                    let trimmed = s.trim_end_matches(['\r', '\n']);
+                    let idx = trimmed.parse::<u32>().map_err(|_| PickleError::MalformedIndex)?;
+                    let val = self
+                        .memo
+                        .get(&idx)
+                        .cloned()
+                        .ok_or(PickleError::MalformedIndex)?;
+                    self.stack.push(val);
                 }
                 // MEMOIZE (0x94)
                 0x94 => {
@@ -307,13 +461,24 @@ impl<'a> InertPickleVm<'a> {
                 // BINGET (0x68, 'h')
                 b'h' => {
                     let idx = self.read_u8()? as u32;
-                    let val = self.memo.get(&idx).cloned().ok_or(PickleError::MalformedIndex)?;
+                    let val = self
+                        .memo
+                        .get(&idx)
+                        .cloned()
+                        .ok_or(PickleError::MalformedIndex)?;
                     self.stack.push(val);
                 }
                 // LONG_BINGET (0x6a, 'j')
                 b'j' => {
-                    let idx = self.reader.read_u32::<LittleEndian>().map_err(|_| PickleError::UnexpectedEof(pos))?;
-                    let val = self.memo.get(&idx).cloned().ok_or(PickleError::MalformedIndex)?;
+                    let idx = self
+                        .reader
+                        .read_u32::<LittleEndian>()
+                        .map_err(|_| PickleError::UnexpectedEof(pos))?;
+                    let val = self
+                        .memo
+                        .get(&idx)
+                        .cloned()
+                        .ok_or(PickleError::MalformedIndex)?;
                     self.stack.push(val);
                 }
                 // STOP (0x2e, '.')
@@ -330,13 +495,17 @@ impl<'a> InertPickleVm<'a> {
 
     fn read_u8(&mut self) -> Result<u8, PickleError> {
         let pos = self.reader.position() as usize;
-        self.reader.read_u8().map_err(|_| PickleError::UnexpectedEof(pos))
+        self.reader
+            .read_u8()
+            .map_err(|_| PickleError::UnexpectedEof(pos))
     }
 
     fn read_long_bytes(&mut self, len: usize) -> Result<i64, PickleError> {
         let pos = self.reader.position() as usize;
         let mut buf = vec![0u8; len];
-        self.reader.read_exact(&mut buf).map_err(|_| PickleError::UnexpectedEof(pos))?;
+        self.reader
+            .read_exact(&mut buf)
+            .map_err(|_| PickleError::UnexpectedEof(pos))?;
         if buf.is_empty() {
             return Ok(0);
         }
@@ -391,31 +560,34 @@ fn extract_file_entries(val: &PickleValue) -> Result<Vec<RpaFileEntry>, PickleEr
 }
 
 fn parse_single_chunk(chunk: &PickleValue) -> Option<RpaFileEntry> {
-    match chunk {
-        PickleValue::Tuple(fields) => {
-            if fields.len() >= 2 {
-                let offset = match fields[0] {
-                    PickleValue::Int(i) => i as u64,
-                    _ => return None,
-                };
-                let length = match fields[1] {
-                    PickleValue::Int(i) => i as u64,
-                    _ => return None,
-                };
-                let prefix = if fields.len() >= 3 {
-                    match &fields[2] {
-                        PickleValue::Bytes(b) => b.clone(),
-                        PickleValue::String(s) => s.as_bytes().to_vec(),
-                        _ => Vec::new(),
-                    }
-                } else {
-                    Vec::new()
-                };
-                Some(RpaFileEntry { offset, length, prefix })
-            } else {
-                None
+    let fields = match chunk {
+        PickleValue::Tuple(f) | PickleValue::List(f) => f,
+        _ => return None,
+    };
+    if fields.len() >= 2 {
+        let offset = match fields[0] {
+            PickleValue::Int(i) => i as u64,
+            _ => return None,
+        };
+        let length = match fields[1] {
+            PickleValue::Int(i) => i as u64,
+            _ => return None,
+        };
+        let prefix = if fields.len() >= 3 {
+            match &fields[2] {
+                PickleValue::Bytes(b) => b.clone(),
+                PickleValue::String(s) => s.as_bytes().to_vec(),
+                _ => Vec::new(),
             }
-        }
-        _ => None,
+        } else {
+            Vec::new()
+        };
+        Some(RpaFileEntry {
+            offset,
+            length,
+            prefix,
+        })
+    } else {
+        None
     }
 }

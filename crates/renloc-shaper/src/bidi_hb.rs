@@ -32,7 +32,8 @@ impl TextShaper {
         max_box_width_px: Option<f32>,
         max_box_height_px: Option<f32>,
     ) -> Result<ShapedTextMetrics, ShapeError> {
-        let face = Face::from_slice(font_data, 0).ok_or_else(|| ShapeError::FaceError("Invalid font data".into()))?;
+        let face = Face::from_slice(font_data, 0)
+            .ok_or_else(|| ShapeError::FaceError("Invalid font data".into()))?;
         let upem = face.units_per_em() as f32;
         let scale_factor = font_size_pt / upem;
 
@@ -110,15 +111,30 @@ mod tests {
     #[test]
     fn test_shape_and_overflow_detection() {
         if std::path::Path::new("/usr/share/fonts/TTF/DejaVuSans.ttf").exists() {
-            let font_bytes = std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf").expect("read font");
-            
+            let font_bytes =
+                std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf").expect("read font");
+
             // Short text, large box -> No overflow
-            let m1 = TextShaper::shape_and_measure(&font_bytes, 16.0, "Xin chào", Some(500.0), Some(100.0)).expect("shape");
+            let m1 = TextShaper::shape_and_measure(
+                &font_bytes,
+                16.0,
+                "Xin chào",
+                Some(500.0),
+                Some(100.0),
+            )
+            .expect("shape");
             assert!(!m1.is_overflowing);
             assert!(m1.total_advance_pixels > 0.0);
 
             // Long text, tiny box -> Overflow detected
-            let m2 = TextShaper::shape_and_measure(&font_bytes, 16.0, "Đây là một đoạn hội thoại rất dài để kiểm tra tràn khung thoại trong Ren'Py.", Some(50.0), Some(100.0)).expect("shape");
+            let m2 = TextShaper::shape_and_measure(
+                &font_bytes,
+                16.0,
+                "Đây là một đoạn hội thoại rất dài để kiểm tra tràn khung thoại trong Ren'Py.",
+                Some(50.0),
+                Some(100.0),
+            )
+            .expect("shape");
             assert!(m2.is_overflowing);
         }
     }

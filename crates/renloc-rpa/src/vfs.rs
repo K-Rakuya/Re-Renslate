@@ -123,7 +123,10 @@ impl VfsLayer {
     }
 
     /// Mounts an extracted fallback directory containing files dumped by live engine fallback.
-    pub fn mount_fallback_directory<P: AsRef<Path>>(&mut self, fallback_dir: P) -> Result<(), VfsError> {
+    pub fn mount_fallback_directory<P: AsRef<Path>>(
+        &mut self,
+        fallback_dir: P,
+    ) -> Result<(), VfsError> {
         let dir = fallback_dir.as_ref();
         if dir.is_dir() {
             self.fallback_dirs.push(dir.to_path_buf());
@@ -151,7 +154,10 @@ impl VfsLayer {
     }
 
     /// Writes the In-Game VFS Fallback script to `target_game_dir/00_renloc_vfs_fallback.rpy`.
-    pub fn write_in_game_fallback<P: AsRef<Path>>(&self, target_game_dir: P) -> Result<PathBuf, VfsError> {
+    pub fn write_in_game_fallback<P: AsRef<Path>>(
+        &self,
+        target_game_dir: P,
+    ) -> Result<PathBuf, VfsError> {
         let path = crate::fallback::write_in_game_fallback_script(target_game_dir, None)?;
         Ok(path)
     }

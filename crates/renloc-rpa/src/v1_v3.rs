@@ -2,12 +2,12 @@
 //! Core decompression, multi-part chunked archive stitching, and slicing logic for:
 //! RPA-1.0, RPA-2.0, RPA-3.0, RPA-3.2, RPA-4.0, ALT-1.0, and ZiX-12A/12B.
 
+use flate2::read::ZlibDecoder;
+use memmap2::Mmap;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use flate2::read::ZlibDecoder;
-use memmap2::Mmap;
 use thiserror::Error;
 
 use crate::header::{parse_rpa_header, RpaHeaderInfo, RpaVersion};
@@ -68,7 +68,8 @@ pub fn discover_sibling_parts(first_part: &Path) -> Vec<PathBuf> {
                 let width = digits_str.len();
                 let mut next_num = first_num + 1;
                 loop {
-                    let candidate = parent.join(format!("{}.part{:0width$}", base, next_num, width = width));
+                    let candidate =
+                        parent.join(format!("{}.part{:0width$}", base, next_num, width = width));
                     if candidate.is_file() {
                         parts.push(candidate);
                         next_num += 1;
@@ -81,7 +82,8 @@ pub fn discover_sibling_parts(first_part: &Path) -> Vec<PathBuf> {
             let width = ext.len();
             let mut next_num = first_num + 1;
             loop {
-                let candidate_formatted = parent.join(format!("{}.{:0width$}", base, next_num, width = width));
+                let candidate_formatted =
+                    parent.join(format!("{}.{:0width$}", base, next_num, width = width));
                 if candidate_formatted.is_file() {
                     parts.push(candidate_formatted);
                     next_num += 1;
@@ -96,7 +98,8 @@ pub fn discover_sibling_parts(first_part: &Path) -> Vec<PathBuf> {
                 break;
             }
         }
-    } else if filename.ends_with(".rpa") || filename.ends_with(".rpi") || filename.ends_with(".arc") {
+    } else if filename.ends_with(".rpa") || filename.ends_with(".rpi") || filename.ends_with(".arc")
+    {
         // If "archive.rpa" does not exist or has sibling parts:
         let part1 = parent.join(format!("{}.001", filename));
         if part1.is_file() {
@@ -188,7 +191,11 @@ impl MultiPartStorage {
     /// Reads `len` bytes starting at `offset`, stitching bytes across multiple parts if needed.
     pub fn read_bytes(&self, offset: u64, len: usize, dest: &mut Vec<u8>) -> Result<(), RpaError> {
         if offset + len as u64 > self.total_len {
-            return Err(RpaError::OutOfBounds(offset, len as u64, self.total_len as usize));
+            return Err(RpaError::OutOfBounds(
+                offset,
+                len as u64,
+                self.total_len as usize,
+            ));
         }
 
         let mut remaining = len;
@@ -267,7 +274,10 @@ impl RpaReader {
 
     /// Opens an explicit sequence of multi-part archive files, stitching them into a single archive.
     pub fn open_multipart<P: AsRef<Path>>(part_paths: &[P]) -> Result<Self, RpaError> {
-        let paths: Vec<PathBuf> = part_paths.iter().map(|p| p.as_ref().to_path_buf()).collect();
+        let paths: Vec<PathBuf> = part_paths
+            .iter()
+            .map(|p| p.as_ref().to_path_buf())
+            .collect();
         if paths.is_empty() {
             return Err(RpaError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -305,7 +315,9 @@ impl RpaReader {
             let header = parse_rpa_header(&rpi_bytes)?;
             let mut decoder = ZlibDecoder::new(&rpi_bytes[..]);
             let mut decompressed = Vec::new();
-            decoder.read_to_end(&mut decompressed).map_err(|e| RpaError::Decompression(e.to_string()))?;
+            decoder
+                .read_to_end(&mut decompressed)
+                .map_err(|e| RpaError::Decompression(e.to_string()))?;
             let vm = InertPickleVm::new(&decompressed);
             let index = vm.parse_rpa_index()?;
             (header, index)
@@ -313,15 +325,19 @@ impl RpaReader {
             let header_bytes = storage.slice_exact(0, 128.min(storage.len() as usize))?;
             let header = parse_rpa_header(&header_bytes)?;
             let index = match header.version {
-                RpaVersion::Rpa1 => {
-                    Self::decompress_and_parse_index(&storage, 0, None)?
-                }
+                RpaVersion::Rpa1 => Self::decompress_and_parse_index(&storage, 0, None)?,
                 RpaVersion::Rpa2 => {
                     Self::decompress_and_parse_index(&storage, header.index_offset, None)?
                 }
-                RpaVersion::Rpa3 | RpaVersion::Custom8Byte(_) | RpaVersion::Rpa32 | RpaVersion::Rpa40 | RpaVersion::Alt10 => {
-                    Self::decompress_and_parse_index(&storage, header.index_offset, header.obfuscation_key)?
-                }
+                RpaVersion::Rpa3
+                | RpaVersion::Custom8Byte(_)
+                | RpaVersion::Rpa32
+                | RpaVersion::Rpa40
+                | RpaVersion::Alt10 => Self::decompress_and_parse_index(
+                    &storage,
+                    header.index_offset,
+                    header.obfuscation_key,
+                )?,
                 RpaVersion::ZiX12A | RpaVersion::ZiX12B => {
                     // ZiX variant requires Live Ren'Py In-Game VFS Fallback
                     HashMap::new()
@@ -350,7 +366,9 @@ impl RpaReader {
         let cursor = MultiPartReaderCursor::new(storage, offset);
         let mut decoder = ZlibDecoder::new(cursor);
         let mut decompressed = Vec::new();
-        decoder.read_to_end(&mut decompressed).map_err(|e| RpaError::Decompression(e.to_string()))?;
+        decoder
+            .read_to_end(&mut decompressed)
+            .map_err(|e| RpaError::Decompression(e.to_string()))?;
 
         // Parse with inert pickle VM
         let vm = InertPickleVm::new(&decompressed);
@@ -375,19 +393,27 @@ impl RpaReader {
     }
 
     pub fn read_file(&self, filename: &str) -> Result<Vec<u8>, RpaError> {
-        let entries = self.index.get(filename).ok_or_else(|| RpaError::FileNotFound(filename.to_string()))?;
+        let entries = self
+            .index
+            .get(filename)
+            .ok_or_else(|| RpaError::FileNotFound(filename.to_string()))?;
         let mut content = Vec::new();
 
         for entry in entries {
             let total_len = self.storage.len();
             if entry.offset + entry.length > total_len {
-                return Err(RpaError::OutOfBounds(entry.offset, entry.length, total_len as usize));
+                return Err(RpaError::OutOfBounds(
+                    entry.offset,
+                    entry.length,
+                    total_len as usize,
+                ));
             }
 
             content.extend_from_slice(&entry.prefix);
             let slice_offset = entry.offset + entry.prefix.len() as u64;
             let slice_len = (entry.length as usize).saturating_sub(entry.prefix.len());
-            self.storage.read_bytes(slice_offset, slice_len, &mut content)?;
+            self.storage
+                .read_bytes(slice_offset, slice_len, &mut content)?;
         }
 
         Ok(content)

@@ -596,8 +596,8 @@ class DecompilerPipeline:
         sim = PyLingualStackSimulator(dis_code.version)
         visited_blocks: Set[int] = set()
 
-        def emit_block(block_id: int, indent_level: int = 0) -> List[str]:
-            if block_id not in cfg.blocks or block_id in visited_blocks:
+        def emit_block(block_id: int, indent_level: int = 0, stop_block: Optional[int] = None) -> List[str]:
+            if block_id not in cfg.blocks or block_id in visited_blocks or block_id == stop_block:
                 return []
             visited_blocks.add(block_id)
 
@@ -620,7 +620,6 @@ class DecompilerPipeline:
             if loop_match:
                 if loop_match.loop_type == "for":
                     target_var = "item"
-                    # Inspect next block instruction for store variable
                     for b_id in sorted(loop_match.body_blocks - {block_id}):
                         b = cfg.blocks.get(b_id)
                         if b:
@@ -634,7 +633,6 @@ class DecompilerPipeline:
                     iter_expr = sim.pop()
                     block_lines.append(f"{indent}for {target_var} in {iter_expr}:")
 
-                    # Emit loop body, skipping the initial store instruction if it matches target_var
                     for b_id in sorted(loop_match.body_blocks - {block_id}):
                         b = cfg.blocks.get(b_id)
                         if b:
@@ -648,27 +646,25 @@ class DecompilerPipeline:
                                 if stmt:
                                     block_lines.append(f"{indent}    {stmt}")
 
-                    # Continue after loop exit
                     exit_blocks = [s for s in block.successors if s not in loop_match.body_blocks]
                     for ex in exit_blocks:
-                        for line in emit_block(ex, indent_level):
+                        for line in emit_block(ex, indent_level, stop_block=stop_block):
                             block_lines.append(line)
                     return block_lines
 
                 else:
-                    # While loop construct
                     cond = sim.pop()
                     if cond in ("None", "__NULL__", ""):
                         cond = "True"
                     block_lines.append(f"{indent}while {cond}:")
 
                     for b_id in sorted(loop_match.body_blocks - {block_id}):
-                        for line in emit_block(b_id, indent_level + 1):
+                        for line in emit_block(b_id, indent_level + 1, stop_block=stop_block):
                             block_lines.append(line)
 
                     exit_blocks = [s for s in block.successors if s not in loop_match.body_blocks]
                     for ex in exit_blocks:
-                        for line in emit_block(ex, indent_level):
+                        for line in emit_block(ex, indent_level, stop_block=stop_block):
                             block_lines.append(line)
                     return block_lines
 
@@ -681,32 +677,69 @@ class DecompilerPipeline:
                 block_lines.append(f"{indent}if {cond}:")
 
                 true_block_id = block_id + 1
-                false_block_id = last_inst.jump_target
-                false_block = next((b for b in cfg.blocks.values() if b.start_offset == false_block_id), None)
+                false_offset = last_inst.jump_target
+                false_block = next((b for b in cfg.blocks.values() if b.start_offset == false_offset), None)
                 false_block_id = false_block.block_id if false_block else None
 
-                true_lines = emit_block(true_block_id, indent_level + 1) if true_block_id in cfg.blocks else []
-                if true_lines:
-                    block_lines.extend(true_lines)
-                else:
-                    block_lines.append(f"{indent}    pass")
+                # Check if false_block is a merge block (reachable from true_block)
+                is_merge_block = False
+                if false_block_id is not None and true_block_id in cfg.blocks:
+                    q = [true_block_id]
+                    seen = set()
+                    while q:
+                        curr = q.pop()
+                        if curr == false_block_id:
+                            is_merge_block = True
+                            break
+                        seen.add(curr)
+                        if curr in cfg.blocks:
+                            for s in cfg.blocks[curr].successors:
+                                if s not in seen and s != block_id:
+                                    q.append(s)
 
-                if false_block_id is not None and false_block_id not in visited_blocks:
-                    if len(cfg.blocks[false_block_id].predecessors) <= 1 or (false_block_id not in (true_block_id + 1,)):
+                if is_merge_block:
+                    # if-without-else: true branch stops at false_block_id
+                    true_lines = emit_block(true_block_id, indent_level + 1, stop_block=false_block_id)
+                    if true_lines:
+                        block_lines.extend(true_lines)
+                    else:
+                        block_lines.append(f"{indent}    pass")
+
+                    if false_block_id is not None and false_block_id not in visited_blocks:
+                        block_lines.extend(emit_block(false_block_id, indent_level, stop_block=stop_block))
+                    return block_lines
+                else:
+                    # if-else: detect common merge successor if any
+                    merge_id = None
+                    if true_block_id in cfg.blocks and false_block_id in cfg.blocks:
+                        true_succs = set(cfg.blocks[true_block_id].successors)
+                        false_succs = set(cfg.blocks[false_block_id].successors)
+                        common = true_succs.intersection(false_succs)
+                        if common:
+                            merge_id = next(iter(common))
+
+                    true_lines = emit_block(true_block_id, indent_level + 1, stop_block=merge_id)
+                    if true_lines:
+                        block_lines.extend(true_lines)
+                    else:
+                        block_lines.append(f"{indent}    pass")
+
+                    if false_block_id is not None and false_block_id not in visited_blocks:
                         block_lines.append(f"{indent}else:")
-                        false_lines = emit_block(false_block_id, indent_level + 1)
+                        false_lines = emit_block(false_block_id, indent_level + 1, stop_block=merge_id)
                         if false_lines:
                             block_lines.extend(false_lines)
                         else:
                             block_lines.append(f"{indent}    pass")
-                    else:
-                        block_lines.extend(emit_block(false_block_id, indent_level))
 
-                return block_lines
+                    if merge_id is not None and merge_id not in visited_blocks:
+                        block_lines.extend(emit_block(merge_id, indent_level, stop_block=stop_block))
+
+                    return block_lines
 
             for succ_id in block.successors:
-                if succ_id not in visited_blocks:
-                    block_lines.extend(emit_block(succ_id, indent_level))
+                if succ_id not in visited_blocks and succ_id != stop_block:
+                    block_lines.extend(emit_block(succ_id, indent_level, stop_block=stop_block))
 
             return block_lines
 

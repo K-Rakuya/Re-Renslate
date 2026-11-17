@@ -44,8 +44,12 @@ pub struct CmapAuditor;
 
 impl CmapAuditor {
     /// Audits a font's raw TTF/OTF bytes against the 134 Vietnamese NFC characters.
-    pub fn audit_font_bytes(font_name: &str, font_data: &[u8]) -> Result<FontAuditResult, FontAuditError> {
-        let face = Face::parse(font_data, 0).map_err(|e| FontAuditError::FontParseError(e.to_string()))?;
+    pub fn audit_font_bytes(
+        font_name: &str,
+        font_data: &[u8],
+    ) -> Result<FontAuditResult, FontAuditError> {
+        let face =
+            Face::parse(font_data, 0).map_err(|e| FontAuditError::FontParseError(e.to_string()))?;
 
         let mut missing = Vec::new();
         let mut supported = 0;
@@ -85,14 +89,26 @@ impl CmapAuditor {
     ) -> String {
         let mut dsl = String::new();
         dsl.push_str("init python:\n");
-        dsl.push_str(&format!("    renpy.register_font_group(\"{}\",\n", group_name));
-        dsl.push_str(&format!("        FontGroup().add(\"{}\", 0x0020, 0x007e)\n", primary_font_path));
+        dsl.push_str(&format!(
+            "    renpy.register_font_group(\"{}\",\n",
+            group_name
+        ));
+        dsl.push_str(&format!(
+            "        FontGroup().add(\"{}\", 0x0020, 0x007e)\n",
+            primary_font_path
+        ));
 
         if !audit.is_fully_compatible {
-            dsl.push_str(&format!("        .add(\"{}\", 0x00c0, 0x1ef9) # Vietnamese Vowels & Tone Marks\n", fallback_font_path));
+            dsl.push_str(&format!(
+                "        .add(\"{}\", 0x00c0, 0x1ef9) # Vietnamese Vowels & Tone Marks\n",
+                fallback_font_path
+            ));
         }
 
-        dsl.push_str(&format!("        .add(\"{}\") # Default fallback to primary\n", primary_font_path));
+        dsl.push_str(&format!(
+            "        .add(\"{}\") # Default fallback to primary\n",
+            primary_font_path
+        ));
         dsl.push_str("    )\n");
         dsl
     }
@@ -135,8 +151,10 @@ mod tests {
     #[test]
     fn test_system_dejavu_font_audit() {
         if std::path::Path::new("/usr/share/fonts/TTF/DejaVuSans.ttf").exists() {
-            let font_bytes = std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf").expect("read font");
-            let result = CmapAuditor::audit_font_bytes("DejaVuSans.ttf", &font_bytes).expect("audit");
+            let font_bytes =
+                std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf").expect("read font");
+            let result =
+                CmapAuditor::audit_font_bytes("DejaVuSans.ttf", &font_bytes).expect("audit");
             assert_eq!(result.total_required, 134);
             assert_eq!(result.supported_count, 134);
             assert!(result.is_fully_compatible);

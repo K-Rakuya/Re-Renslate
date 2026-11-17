@@ -28,8 +28,15 @@ impl PyRpaArchive {
         self.inner.list_files()
     }
 
-    pub fn read_file<'py>(&self, py: Python<'py>, filename: String) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = self.inner.read_file(&filename).map_err(|e| PyIOError::new_err(e.to_string()))?;
+    pub fn read_file<'py>(
+        &self,
+        py: Python<'py>,
+        filename: String,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self
+            .inner
+            .read_file(&filename)
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
         Ok(PyBytes::new_bound(py, &bytes))
     }
 
@@ -61,22 +68,30 @@ impl PyVfsLayer {
     }
 
     pub fn mount_game_directory(&mut self) -> PyResult<()> {
-        self.inner.mount_game_directory().map_err(|e| PyIOError::new_err(e.to_string()))?;
+        self.inner
+            .mount_game_directory()
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
         Ok(())
     }
 
     pub fn mount_archive(&mut self, path: String) -> PyResult<()> {
-        self.inner.mount_archive(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        self.inner
+            .mount_archive(path)
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
         Ok(())
     }
 
     pub fn mount_multipart_archive(&mut self, paths: Vec<String>) -> PyResult<()> {
-        self.inner.mount_multipart_archive(&paths).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        self.inner
+            .mount_multipart_archive(&paths)
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
         Ok(())
     }
 
     pub fn mount_fallback_directory(&mut self, fallback_dir: String) -> PyResult<()> {
-        self.inner.mount_fallback_directory(fallback_dir).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        self.inner
+            .mount_fallback_directory(fallback_dir)
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
         Ok(())
     }
 
@@ -89,12 +104,22 @@ impl PyVfsLayer {
     }
 
     pub fn write_in_game_fallback(&self, target_game_dir: String) -> PyResult<String> {
-        let path = self.inner.write_in_game_fallback(target_game_dir).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        let path = self
+            .inner
+            .write_in_game_fallback(target_game_dir)
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
         Ok(path.to_string_lossy().to_string())
     }
 
-    pub fn read_file<'py>(&self, py: Python<'py>, virtual_path: String) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = self.inner.read_file(&virtual_path).map_err(|e| PyIOError::new_err(e.to_string()))?;
+    pub fn read_file<'py>(
+        &self,
+        py: Python<'py>,
+        virtual_path: String,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self
+            .inner
+            .read_file(&virtual_path)
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
         Ok(PyBytes::new_bound(py, &bytes))
     }
 
@@ -104,7 +129,11 @@ impl PyVfsLayer {
 }
 
 #[pyfunction]
-pub fn audit_font_bytes<'py>(py: Python<'py>, font_name: String, font_data: &[u8]) -> PyResult<Bound<'py, PyDict>> {
+pub fn audit_font_bytes<'py>(
+    py: Python<'py>,
+    font_name: String,
+    font_data: &[u8],
+) -> PyResult<Bound<'py, PyDict>> {
     let result = CmapAuditor::audit_font_bytes(&font_name, font_data)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
@@ -130,8 +159,14 @@ pub fn shape_and_measure<'py>(
     max_box_width_px: Option<f32>,
     max_box_height_px: Option<f32>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let metrics = TextShaper::shape_and_measure(font_data, font_size_pt, &text, max_box_width_px, max_box_height_px)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let metrics = TextShaper::shape_and_measure(
+        font_data,
+        font_size_pt,
+        &text,
+        max_box_width_px,
+        max_box_height_px,
+    )
+    .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
     let dict = PyDict::new_bound(py);
     dict.set_item("total_advance_pixels", metrics.total_advance_pixels)?;

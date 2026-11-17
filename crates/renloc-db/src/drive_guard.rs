@@ -131,7 +131,7 @@ mod tests {
         let dt = check_path_drive(&cwd);
         // Current directory on local disk should be Local or FUSE depending on runner
         match dt {
-            DriveType::Local => assert!(true),
+            DriveType::Local => {}
             DriveType::Network(name) => println!("Detected filesystem: {}", name),
         }
     }

@@ -219,3 +219,28 @@ class VramMonitor:
         required_bytes = batch_size * config.estimate_bytes_per_request(max_seq_len=seq_len)
 
         return required_bytes > effective_vram
+
+    def split_into_adaptive_batches(
+        self,
+        items: Sequence[Any],
+        max_batch_size: int = 32,
+        seq_len: int = 512,
+        model_config: Optional[ModelVramConfig] = None,
+    ) -> List[List[Any]]:
+        """
+        Partition items into safe, non-OOM batches dynamically adhering
+        to the _room_for_copy margin.
+        """
+        if not items:
+            return []
+
+        adaptive_size = self.calculate_adaptive_batch_size(
+            target_batch_size=max_batch_size,
+            seq_len=seq_len,
+            model_config=model_config,
+        )
+
+        batches = []
+        for i in range(0, len(items), adaptive_size):
+            batches.append(list(items[i : i + adaptive_size]))
+        return batches

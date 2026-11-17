@@ -189,6 +189,17 @@ class TestInterpolationLexer:
         assert "<T1>" in missing
         assert "<T99>" in extra
 
+    def test_nested_brackets_and_format_specifiers(self):
+        # Nested brackets inside variable: [items[0].name!ti]
+        # Format specifier: [score:04d!u]
+        text = "Nhận được [items[0].name!ti] với số điểm [score:04d!u] và [player.stats['hp']:02d]!"
+        masked, pmap = mask_substitutions(text)
+        assert "<V0!ti>" in masked
+        assert "<V1!u>" in masked
+        assert "<V2>" in masked
+        restored = restore_substitutions(masked, pmap)
+        assert restored == text
+
     def test_interpolation_lexer_convenience_class(self):
         text = "Test [hero!cl] {b}tag{/b}"
         masked, pmap = InterpolationLexer.mask(text)

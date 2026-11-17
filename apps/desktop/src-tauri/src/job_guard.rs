@@ -51,7 +51,9 @@ impl ProcessGuard {
             let process_handle = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, child_pid);
             if process_handle.is_null() {
                 CloseHandle(job);
-                return Err(GuardError::System("Failed to open child process handle".into()));
+                return Err(GuardError::System(
+                    "Failed to open child process handle".into(),
+                ));
             }
 
             let assign_res = AssignProcessToJobObject(job, process_handle);
@@ -59,7 +61,9 @@ impl ProcessGuard {
 
             if assign_res == 0 {
                 CloseHandle(job);
-                return Err(GuardError::System("Failed to assign process to Job Object".into()));
+                return Err(GuardError::System(
+                    "Failed to assign process to Job Object".into(),
+                ));
             }
         }
 
@@ -71,7 +75,10 @@ impl ProcessGuard {
     }
 
     #[cfg(unix)]
-    pub fn new(child: &Child, death_pipe_write: Option<std::os::unix::io::OwnedFd>) -> Result<Self, GuardError> {
+    pub fn new(
+        child: &Child,
+        death_pipe_write: Option<std::os::unix::io::OwnedFd>,
+    ) -> Result<Self, GuardError> {
         let child_pid = child.id();
         info!("Registered POSIX process guard for child PID {}", child_pid);
         Ok(Self {
@@ -83,8 +90,8 @@ impl ProcessGuard {
 
     #[cfg(unix)]
     pub fn spawn_guarded(cmd: &mut std::process::Command) -> Result<(Child, Self), GuardError> {
-        use std::os::unix::process::CommandExt;
         use std::os::unix::io::FromRawFd;
+        use std::os::unix::process::CommandExt;
 
         // Create pipe for death-pipe detection
         let mut pipe_fds = [0i32; 2];
@@ -178,7 +185,10 @@ impl ProcessGuard {
                 let _ = kill(Pid::from_raw(pgid), Signal::SIGKILL);
                 info!("POSIX process guard sent SIGKILL to group {}", pgid);
             } else {
-                info!("POSIX process group {} exited gracefully after SIGTERM", pgid);
+                info!(
+                    "POSIX process group {} exited gracefully after SIGTERM",
+                    pgid
+                );
             }
         }
 
@@ -206,7 +216,8 @@ mod tests {
         let mut cmd = Command::new("sleep");
         cmd.arg("60");
 
-        let (mut child, guard) = ProcessGuard::spawn_guarded(&mut cmd).expect("Failed to spawn guarded sleep");
+        let (mut child, guard) =
+            ProcessGuard::spawn_guarded(&mut cmd).expect("Failed to spawn guarded sleep");
         let _pid = child.id();
 
         // Check child is running

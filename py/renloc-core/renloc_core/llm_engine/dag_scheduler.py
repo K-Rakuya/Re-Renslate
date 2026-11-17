@@ -302,6 +302,7 @@ class DagScheduler:
         new_status: TaskStatus,
         result_update: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
+        force: bool = False,
     ) -> DagTask:
         """
         Transition task through milestone states:
@@ -322,6 +323,12 @@ class DagScheduler:
                 raise KeyError(f"Task with id '{task_id}' not found.")
 
             task = self._row_to_task(row)
+
+            # Idempotency guard: once COMMITTED, ignore backward transitions unless forced
+            if task.status == TaskStatus.COMMITTED and new_status != TaskStatus.COMMITTED and not force:
+                logger.info(f"Task '{task_id}' is already COMMITTED. Preserving COMMITTED status.")
+                cursor.execute("COMMIT;")
+                return task
 
             # Update result dictionary incrementally
             merged_result = dict(task.result)

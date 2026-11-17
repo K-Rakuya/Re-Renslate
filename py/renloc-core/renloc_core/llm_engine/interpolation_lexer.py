@@ -196,11 +196,11 @@ MASTER_LEXER_REGEX = re.compile(
     r"(?P<escape_char>\\[n\\\"'])|"
     r"(?P<ruby>【[^｜|]+[｜|][^】]+】)|"
     r"(?P<tag>\{[^}]+\})|"
-    r"(?P<variable>\[[^\]]+\])"
+    r"(?P<variable>\[(?:[^\[\]]|\[[^\[\]]*\])*\])"
 )
 
-# Regex to parse inside variable: [var_expr!flags]
-VAR_PARSER_REGEX = re.compile(r"^\[(?P<expr>[^!\]]+)(?P<flags>!+.*)?\]$")
+# Regex to parse inside variable: [var_expr:format!flags]
+VAR_PARSER_REGEX = re.compile(r"^\[(?P<expr>.*?)(?P<flags>!+[a-zA-Z!]+)?\]$")
 
 
 def tokenize(text: str) -> List[Token]:

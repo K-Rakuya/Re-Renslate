@@ -15,6 +15,12 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Union
 
 logger = logging.getLogger(__name__)
 
+try:
+    from renloc_core.llm_engine.constraint_compiler import TagStackLogitsProcessor
+    _HAS_TAG_STACK_PROCESSOR = True
+except ImportError:
+    _HAS_TAG_STACK_PROCESSOR = False
+
 
 # ==============================================================================
 # Data Structures
@@ -108,6 +114,10 @@ class LlamaCppLogitsProcessorCallback:
         self.tag_tokens_map = tag_tokens_map or {}
         self.tag_stack: List[str] = []
         self.step = 0
+        if _HAS_TAG_STACK_PROCESSOR:
+            self._tag_processor = TagStackLogitsProcessor(expected_tags=self.tags)
+        else:
+            self._tag_processor = None
 
     def __call__(self, input_ids: Sequence[int], logits: Any) -> Any:
         """
@@ -115,6 +125,11 @@ class LlamaCppLogitsProcessorCallback:
         (input_ids: Sequence[int], logits: List[float] | np.ndarray) -> logits
         """
         self.step += 1
+
+        if self._tag_processor is not None:
+            return self._tag_processor(input_ids, logits)
+
+        # Fallback if constraint compiler unavailable
 
         # Check logits type (list or numpy/torch)
         is_list = isinstance(logits, list)

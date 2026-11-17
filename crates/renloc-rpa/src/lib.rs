@@ -55,13 +55,30 @@ mod tests {
         let malicious_pickle = b"\x80\x02cos\nsystem\n(X\x04\x00\x00\x00calcqtR.";
         let vm = InertPickleVm::new(malicious_pickle);
         let res = vm.parse_rpa_index();
-        assert!(res.is_err(), "Inert pickle VM MUST reject dangerous opcodes!");
+        assert!(
+            res.is_err(),
+            "Inert pickle VM MUST reject dangerous opcodes!"
+        );
         match res.unwrap_err() {
             PickleError::DangerousOpcode(opcode, _, _) => {
                 assert_eq!(opcode, b'c', "Should stop at GLOBAL opcode 'c'");
             }
             other => panic!("Expected DangerousOpcode error, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_inert_pickle_protocol0_opcodes() {
+        // Construct a protocol 0 dictionary with ASCII INT, STRING, TUPLE, LIST, DICT, SETITEM
+        let proto0_stream = b"(dp0\nS'file.txt'\np1\n(lp2\n(I123\nI456\nS'prefix'\ntp3\nas.";
+        let vm = InertPickleVm::new(proto0_stream);
+        let res = vm.parse_rpa_index().expect("Should parse protocol 0 index");
+        assert!(res.contains_key("file.txt"));
+        let entries = &res["file.txt"];
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].offset, 123);
+        assert_eq!(entries[0].length, 456);
+        assert_eq!(entries[0].prefix, b"prefix");
     }
 
     type TestIndexEntry<'a> = (&'a str, Vec<(u64, u64, &'a [u8])>);
@@ -83,7 +100,7 @@ mod tests {
             raw.push(b'('); // MARK
             for (offset, length, prefix) in entries {
                 raw.push(b'('); // MARK
-                // offset as int (BININT or INT)
+                                // offset as int (BININT or INT)
                 raw.push(b'J');
                 raw.extend_from_slice(&(*offset as i32).to_le_bytes());
                 // length as int
@@ -182,7 +199,8 @@ mod tests {
         fs::write(&part2_path, &part2_data).unwrap();
 
         // 1. Open with auto-discovery on part 1
-        let reader = RpaReader::open(&part1_path).expect("Should auto-discover sibling part 2 and stitch");
+        let reader =
+            RpaReader::open(&part1_path).expect("Should auto-discover sibling part 2 and stitch");
         assert!(reader.is_multipart());
         assert_eq!(reader.part_count(), 2);
         assert_eq!(reader.paths().len(), 2);
@@ -201,7 +219,8 @@ mod tests {
 
         // 4. Test VFS layer mounting
         let mut vfs = VfsLayer::new(dir.path());
-        vfs.mount_game_directory().expect("VfsLayer should mount chunked archives");
+        vfs.mount_game_directory()
+            .expect("VfsLayer should mount chunked archives");
 
         let vfs_files = vfs.list_all_files();
         assert!(vfs_files.contains(&"story/chapter1.txt".to_string()));

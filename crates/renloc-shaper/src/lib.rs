@@ -15,6 +15,9 @@ mod tests {
     fn test_vietnamese_char_count() {
         let count = VIETNAMESE_NFC_CHARS.chars().count();
         // 134 Vietnamese NFC characters
-        assert_eq!(count, 134, "Vietnamese NFC set must contain exactly 134 unique characters");
+        assert_eq!(
+            count, 134,
+            "Vietnamese NFC set must contain exactly 134 unique characters"
+        );
     }
 }

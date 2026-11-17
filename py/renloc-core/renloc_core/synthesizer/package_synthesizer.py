@@ -58,12 +58,14 @@ class PackageSynthesizer:
               s "Chào mừng bạn đến với thế giới cổ xưa!"
         """
         header = f"# {item.filename}:{item.linenumber}\ntranslate {self.language} {item.translation_id}:\n\n"
-        comment = f"{self.INDENT}# {item.original_statement_code}\n"
+        clean_orig = item.original_statement_code.replace("\t", "    ")
+        comment = f"{self.INDENT}# {clean_orig}\n"
 
         # Generate translated statement code
+        clean_text = item.translated_text.replace("\t", "    ")
         translated_code = get_say_code(
             who=item.who,
-            what=item.translated_text,
+            what=clean_text,
             attributes=item.attributes,
             temporary_attributes=item.temporary_attributes,
             with_=item.with_,
@@ -84,8 +86,10 @@ class PackageSynthesizer:
         lines = [f"translate {self.language} strings:\n\n"]
         for it in items:
             lines.append(f"{self.INDENT}# {it.filename}:{it.linenumber}\n")
-            lines.append(f"{self.INDENT}old {encode_say_string(it.original_text)}\n")
-            lines.append(f"{self.INDENT}new {encode_say_string(it.translated_text)}\n\n")
+            clean_old = it.original_text.replace("\t", " ")
+            clean_new = it.translated_text.replace("\t", " ")
+            lines.append(f"{self.INDENT}old {encode_say_string(clean_old)}\n")
+            lines.append(f"{self.INDENT}new {encode_say_string(clean_new)}\n\n")
         return "".join(lines)
 
     def generate_font_overrides(self, fallback_font_path: str = "tl/vietnamese/fonts/fallback.ttf") -> str:
