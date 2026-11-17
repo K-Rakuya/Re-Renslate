@@ -83,11 +83,13 @@ class DialogueNormalizer:
         self.dialogue_counter = 0
         self.last_dialogue: Optional[DialogueEntity] = None
         self.entities: List[DialogueEntity] = []
+        self.existing_ids: Set[str] = set()
 
     def normalize_stream(
         self,
         nodes: List[Union[WrapNode, Any]],
         current_label: Optional[str] = None,
+        default_filename: Optional[str] = None,
     ) -> List[DialogueEntity]:
         """
         Processes a sequence of AST nodes or WrapNodes, producing a normalized
@@ -104,9 +106,15 @@ class DialogueNormalizer:
                 depth = item.block_depth
             else:
                 node = item
-                filename = getattr(node, "filename", "script.rpy")
+                filename = getattr(node, "filename", None) or default_filename or "script.rpy"
                 linenumber = getattr(node, "linenumber", 0)
                 depth = 0
+
+            # Update current label context when encountered
+            if hasattr(node, "name") and type(node).__name__ == "Label":
+                lbl_name = getattr(node, "name", None)
+                if isinstance(lbl_name, str):
+                    current_label = lbl_name
 
             # 1. Say / TranslateSay statement
             if isinstance(node, (Say, TranslateSay)):
@@ -125,7 +133,8 @@ class DialogueNormalizer:
                     parent_id = self.last_dialogue.entity_id if self.last_dialogue else None
                     inherited_who = self.last_dialogue.who if self.last_dialogue else None
                     inherited_attrs = attrs if attrs else (self.last_dialogue.attributes if self.last_dialogue else ())
-                    tlid = generate_translation_id(node, label=current_label)
+                    tlid = generate_translation_id(node, label=current_label, existing_ids=self.existing_ids)
+                    self.existing_ids.add(tlid)
 
                     entity = DialogueEntity(
                         entity_id=entity_id,
@@ -147,7 +156,10 @@ class DialogueNormalizer:
 
                 # Form 1: Explicit character
                 elif who is not None:
-                    tlid = getattr(node, "identifier", None) or generate_translation_id(node, label=current_label)
+                    tlid = getattr(node, "identifier", None) or generate_translation_id(
+                        node, label=current_label, existing_ids=self.existing_ids
+                    )
+                    self.existing_ids.add(tlid)
                     entity = DialogueEntity(
                         entity_id=entity_id,
                         who=who,
@@ -167,7 +179,10 @@ class DialogueNormalizer:
 
                 # Form 2: Narration (who is None)
                 else:
-                    tlid = getattr(node, "identifier", None) or generate_translation_id(node, label=current_label)
+                    tlid = getattr(node, "identifier", None) or generate_translation_id(
+                        node, label=current_label, existing_ids=self.existing_ids
+                    )
+                    self.existing_ids.add(tlid)
                     entity = DialogueEntity(
                         entity_id=entity_id,
                         who=None,
@@ -209,7 +224,10 @@ class DialogueNormalizer:
 
                     self.dialogue_counter += 1
                     entity_id = f"dlg_{filename}_{linenumber}_{self.dialogue_counter}"
-                    tlid = generate_translation_id(f'{who or ""} "{what}"', label=current_label)
+                    tlid = generate_translation_id(
+                        f'{who or ""} "{what}"', label=current_label, existing_ids=self.existing_ids
+                    )
+                    self.existing_ids.add(tlid)
 
                     entity = DialogueEntity(
                         entity_id=entity_id,
@@ -231,7 +249,10 @@ class DialogueNormalizer:
                     text = match.group("text")
                     self.dialogue_counter += 1
                     entity_id = f"str_{filename}_{linenumber}_{self.dialogue_counter}"
-                    tlid = generate_translation_id(f'"{text}"', label=current_label)
+                    tlid = generate_translation_id(
+                        f'"{text}"', label=current_label, existing_ids=self.existing_ids
+                    )
+                    self.existing_ids.add(tlid)
 
                     entity = DialogueEntity(
                         entity_id=entity_id,
@@ -253,7 +274,10 @@ class DialogueNormalizer:
                     text = match.group("text")
                     self.dialogue_counter += 1
                     entity_id = f"str_{filename}_{linenumber}_{self.dialogue_counter}"
-                    tlid = generate_translation_id(f'"{text}"', label=current_label)
+                    tlid = generate_translation_id(
+                        f'"{text}"', label=current_label, existing_ids=self.existing_ids
+                    )
+                    self.existing_ids.add(tlid)
 
                     entity = DialogueEntity(
                         entity_id=entity_id,

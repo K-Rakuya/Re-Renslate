@@ -559,7 +559,14 @@ class LlamaCppAdapter:
         source_raw: Optional[str] = None,
     ) -> GenerationResult:
         """Invokes external OpenAI-compatible llama-server / vLLM / Ollama endpoint."""
-        url = f"{self.server_url}/chat/completions"
+        clean = (self.server_url or "").strip().rstrip("/")
+        if clean.endswith("/chat/completions"):
+            url = clean
+        elif clean.endswith("/v1"):
+            url = f"{clean}/chat/completions"
+        else:
+            url = f"{clean}/v1/chat/completions"
+
         sys_msg = system_prompt or self.DEFAULT_SYSTEM_PROMPT
         payload = {
             "messages": [
@@ -574,12 +581,17 @@ class LlamaCppAdapter:
             req = urllib.request.Request(
                 url,
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", "User-Agent": "Renslate-Desktop"},
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                text = data["choices"][0]["message"]["content"].strip()
+                choices = data.get("choices", [])
+                if not choices:
+                    raise RuntimeError(f"Máy chủ trả về kết quả rỗng (choices=[]): {data}")
+                first_choice = choices[0]
+                message = first_choice.get("message", {})
+                text = (message.get("content") or "").strip()
                 if source_raw:
                     text = self._clean_and_repair_tags(source_raw, text, tags)
                 usage = data.get("usage", {})
@@ -589,9 +601,12 @@ class LlamaCppAdapter:
                     completion_tokens=usage.get("completion_tokens", 0),
                     enforcement_mode="http_llama_server",
                 )
+        except urllib.error.URLError as e:
+            logger.error(f"HTTP call to {url} failed: {e}")
+            raise RuntimeError(f"Không thể kết nối máy chủ suy luận tại '{url}' ({e.reason}). Hãy đảm bảo llama-server đang hoạt động.")
         except Exception as e:
             logger.error(f"HTTP call to {url} failed: {e}")
-            raise RuntimeError(f"Lỗi kết nối llama-server ({url}): {e}")
+            raise RuntimeError(f"Lỗi suy luận từ máy chủ '{url}': {e}")
 
     def _clean_and_repair_tags(
         self,

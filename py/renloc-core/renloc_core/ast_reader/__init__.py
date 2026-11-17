@@ -78,6 +78,8 @@ from .unpickler import (
     read_rpyc_data,
     read_rpymc_data,
     read_rpyc_slots,
+    extract_ast_nodes,
+    read_rpyc_dialogues,
 )
 
 __all__ = [
@@ -151,4 +153,6 @@ __all__ = [
     "read_rpyc_data",
     "read_rpymc_data",
     "read_rpyc_slots",
+    "extract_ast_nodes",
+    "read_rpyc_dialogues",
 ]

@@ -158,12 +158,62 @@ def test_rpc_system_specs_and_translation():
             assert res_prog["ok"] is True
             assert res_prog["result"]["total"] == 1
 
+            # Test test_inference_connection
+            res_conn = await rpc_call("test_inference_connection", {"server_url": "http://127.0.0.1:9999/v1"})
+            assert res_conn["ok"] is True
+            assert res_conn["result"]["online"] is False
+
             # Test unload_model
             res_unload = await rpc_call("unload_model", {})
             assert res_unload["ok"] is True
 
             r_writer.close()
             await r_writer.wait_closed()
+            await server.stop()
+
+    asyncio.run(run_test())
+
+
+def test_rpc_scan_project():
+    async def run_test():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sock_path = Path(tmpdir) / "test_scan.sock"
+            game_dir = Path(tmpdir) / "game_dir"
+            game_sub = game_dir / "game"
+            game_sub.mkdir(parents=True)
+
+            import shutil
+            fixture_rpyc = Path("tests/fixtures/rpyc/sample_8x.rpyc")
+            shutil.copy(fixture_rpyc, game_sub / "script.rpyc")
+
+            db_path = Path(tmpdir) / "project.sqlite"
+            token = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+
+            server = RpcServer(endpoint_path=sock_path, auth_token=token)
+            await server.start()
+
+            reader, writer = await asyncio.open_unix_connection(path=str(sock_path))
+
+            req = {
+                "session_token": token,
+                "method": "scan_project",
+                "payload": {"game_dir": str(game_dir), "db_path": str(db_path)},
+            }
+            enc = msgpack.packb(req, use_bin_type=True)
+            writer.write(struct.pack("<I", len(enc)) + enc)
+            await writer.drain()
+
+            len_b = await reader.readexactly(4)
+            l = struct.unpack("<I", len_b)[0]
+            resp_b = await reader.readexactly(l)
+            res = msgpack.unpackb(resp_b, raw=False)
+
+            assert res["ok"] is True
+            assert res["result"]["total_extracted"] == 2
+            assert res["result"]["rpyc_count"] == 1
+
+            writer.close()
+            await writer.wait_closed()
             await server.stop()
 
     asyncio.run(run_test())

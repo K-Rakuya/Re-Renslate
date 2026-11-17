@@ -78,6 +78,7 @@ class RpcServer:
         self.register_handler("audit_project_fonts", self._handle_audit_project_fonts)
         self.register_handler("get_system_specs", self._handle_get_system_specs)
         self.register_handler("assess_model", self._handle_assess_model)
+        self.register_handler("test_inference_connection", self._handle_test_inference_connection)
         self.register_handler("get_translation_progress", self._handle_get_translation_progress)
         self.register_handler("unload_model", self._handle_unload_model)
         self.register_handler("start_translation", self._handle_start_translation)
@@ -137,7 +138,7 @@ class RpcServer:
         from renloc_core.db_writer import DbWriter
         from renloc_core.db_writer.schema import init_schema
         from renloc_core.static_graph.dialogue_normalizer import DialogueNormalizer
-        from renloc_core.ast_reader.unpickler import NativeRenpyUnpickler
+        from renloc_core.ast_reader.unpickler import read_rpyc_dialogues
 
         try:
             import renloc_native
@@ -151,7 +152,13 @@ class RpcServer:
         writer = DbWriter(db_path)
         init_schema(writer.raw_connection)
 
-        rpyc_files = [f for f in files if f.endswith(".rpyc") or f.endswith(".rpymc")]
+        # Exclude internal renpy/common engine modules to focus strictly on game scripts
+        rpyc_files = [
+            f for f in files
+            if (f.endswith(".rpyc") or f.endswith(".rpymc"))
+            and not f.startswith("renpy/")
+            and not f.startswith("common/")
+        ]
         extracted_count = 0
 
         with writer.write_transaction() as cursor:
@@ -163,28 +170,26 @@ class RpcServer:
                     except Exception:
                         data = (game_dir / rpyc_rel).read_bytes()
 
-                    unpickler = NativeRenpyUnpickler(data)
-                    stmts = unpickler.load_stmts()
-                    if stmts:
-                        dialogues = normalizer.normalize_statements(stmts, rpyc_rel)
-                        for d in dialogues:
-                            cursor.execute(
-                                """
-                                INSERT OR IGNORE INTO translation_units
-                                (unit_identifier, source_text, speaker, status, row_order, file_path, line_number)
-                                VALUES (?, ?, ?, 'PENDING', ?, ?, ?)
-                                """,
-                                (
-                                    d.translation_id,
-                                    d.what,
-                                    d.who,
-                                    extracted_count + 1,
-                                    d.filename,
-                                    d.linenumber,
-                                ),
-                            )
-                            extracted_count += 1
-                except Exception:
+                    dialogues = read_rpyc_dialogues(data, normalizer=normalizer, default_filename=rpyc_rel)
+                    for d in dialogues:
+                        extracted_count += 1
+                        cursor.execute(
+                            """
+                            INSERT OR IGNORE INTO translation_units
+                            (unit_identifier, source_text, speaker, status, row_order, file_path, line_number)
+                            VALUES (?, ?, ?, 'PENDING', ?, ?, ?)
+                            """,
+                            (
+                                d.translation_id,
+                                d.what,
+                                d.who,
+                                extracted_count,
+                                d.filename or rpyc_rel,
+                                d.linenumber or 1,
+                            ),
+                        )
+                except Exception as e:
+                    logger.debug("Failed to extract %s: %s", rpyc_rel, e)
                     continue
 
         return {
@@ -261,6 +266,63 @@ class RpcServer:
         from renloc_core.llm_engine.adapters.llamacpp_adapter import assess_model_memory_risk
         return assess_model_memory_risk(model_path)
 
+    def _handle_test_inference_connection(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Tests connectivity to an external OpenAI-compatible inference server (e.g. llama-server)."""
+        server_url = (payload.get("server_url") or "").strip()
+        if not server_url:
+            return {
+                "online": False,
+                "message": "Chưa nhập địa chỉ URL máy chủ (server_url).",
+                "models": [],
+            }
+
+        import json
+        import urllib.request
+        import urllib.error
+
+        clean = server_url.rstrip("/")
+        if clean.endswith("/chat/completions"):
+            base_url = clean[:-len("/chat/completions")]
+        elif clean.endswith("/v1"):
+            base_url = clean
+        else:
+            base_url = f"{clean}/v1"
+
+        models_url = f"{base_url}/models"
+        health_url = f"{clean}/health"
+
+        # Try models endpoint first
+        try:
+            req = urllib.request.Request(models_url, headers={"User-Agent": "Renslate-Desktop"})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                models = []
+                if isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
+                    models = [m.get("id", "") for m in data["data"] if isinstance(m, dict) and m.get("id")]
+                return {
+                    "online": True,
+                    "message": f"Kết nối máy chủ thành công ({models_url})",
+                    "models": models,
+                }
+        except Exception:
+            pass
+
+        # Try health endpoint fallback
+        try:
+            req = urllib.request.Request(health_url, headers={"User-Agent": "Renslate-Desktop"})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                return {
+                    "online": True,
+                    "message": f"Kết nối máy chủ thành công ({health_url})",
+                    "models": [],
+                }
+        except Exception as e:
+            return {
+                "online": False,
+                "message": f"Không thể kết nối tới {server_url}: {e}",
+                "models": [],
+            }
+
     def _handle_get_translation_progress(self, _payload: Any) -> Dict[str, Any]:
         """Returns current translation execution progress."""
         return self._translation_progress
@@ -273,7 +335,7 @@ class RpcServer:
             self._cached_adapter_key = None
         return {"status": "unloaded"}
 
-    def _handle_start_translation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_start_translation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Translates pending dialogue units using GGUF / local model with OOM guard."""
         db_path_str = payload.get("db_path")
         if not db_path_str:
@@ -362,7 +424,8 @@ class RpcServer:
                     self._translation_progress["current_source"] = src_text
 
                     if adapter is not None:
-                        gen_res = adapter.translate_dialogue(
+                        gen_res = await asyncio.to_thread(
+                            adapter.translate_dialogue,
                             source_text=src_text,
                             speaker=who,
                             temperature=temperature,
@@ -383,6 +446,7 @@ class RpcServer:
                         (trans_text, uid)
                     )
                     translated += 1
+                    await asyncio.sleep(0.001)
 
             self._translation_progress["status"] = "completed"
             self._translation_progress["is_running"] = False

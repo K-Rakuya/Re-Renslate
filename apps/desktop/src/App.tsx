@@ -13,10 +13,12 @@ import {
   assessModel,
   getTranslationProgress,
   unloadModel,
+  testInferenceConnection,
   FontAuditItem,
   SystemSpecs,
   ModelAssessment,
   TranslationProgress,
+  ConnectionTestResult,
 } from './api';
 import {
   FolderOpen,
@@ -34,6 +36,7 @@ import {
   Zap,
   Trash2,
   AlertCircle,
+  Database,
 } from 'lucide-react';
 
 type Tab = 'project' | 'editor' | 'ai' | 'font' | 'export';
@@ -72,6 +75,10 @@ export const App: React.FC = () => {
   const [temperature, setTemperature] = useState<number>(0.2);
   const [batchLimit, setBatchLimit] = useState<number>(20);
   const [liveProgress, setLiveProgress] = useState<TranslationProgress | null>(null);
+  const [translationError, setTranslationError] = useState<string>('');
+  const [translationSuccess, setTranslationSuccess] = useState<string>('');
+  const [connectionTest, setConnectionTest] = useState<ConnectionTestResult | null>(null);
+  const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
 
   // Export state
   const [exportedFiles, setExportedFiles] = useState<string[]>([]);
@@ -138,6 +145,7 @@ export const App: React.FC = () => {
     if (!gameDir.trim()) return;
     setIsLoading(true);
     setStatusMessage('Đang phân tích cấu trúc game, gắn VFS đọc .rpa và trích xuất AST...');
+    setTranslationError('');
     try {
       const res = await scanProject(gameDir);
       setScanStats({
@@ -156,6 +164,51 @@ export const App: React.FC = () => {
       setStatusMessage(`Lỗi khi quét: ${err.message || err}`);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // 1b. Open Existing Project Database (.sqlite)
+  const handleOpenExistingDb = async (customPath?: string) => {
+    const pathToOpen = (customPath || dbPath).trim();
+    if (!pathToOpen) return;
+    setIsLoading(true);
+    setStatusMessage('Đang kết nối vào cơ sở dữ liệu SQLite...');
+    setTranslationError('');
+    try {
+      await openProjectDb(pathToOpen);
+      setDbPath(pathToOpen);
+      const count = await getTotalCount();
+      setTotalCount(count);
+      setStatusMessage(`Đã nạp cơ sở dữ liệu thành công! Tìm thấy ${count.toLocaleString()} câu thoại.`);
+    } catch (err: any) {
+      const msg = `Lỗi mở database: ${err.message || err}`;
+      setStatusMessage(msg);
+      setTranslationError(msg);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 1c. Test llama-server / external inference connection
+  const handleTestConnection = async () => {
+    const targetUrl = serverUrl.trim() || 'http://127.0.0.1:8080/v1';
+    setIsTestingConnection(true);
+    setConnectionTest(null);
+    try {
+      const res = await testInferenceConnection(targetUrl);
+      setConnectionTest(res);
+      if (res.online) {
+        setStatusMessage(`Kết nối llama-server thành công! ${res.models && res.models.length > 0 ? `(Model: ${res.models[0]})` : ''}`);
+      } else {
+        setStatusMessage(`Không thể kết nối llama-server: ${res.message}`);
+      }
+    } catch (err: any) {
+      setConnectionTest({
+        online: false,
+        message: `Lỗi kết nối: ${err.message || err}`,
+      });
+    } finally {
+      setIsTestingConnection(false);
     }
   };
 
@@ -179,19 +232,26 @@ export const App: React.FC = () => {
 
   // 3. Start AI Translation
   const handleStartAi = async () => {
+    setTranslationError('');
+    setTranslationSuccess('');
+
     if (!dbPath.trim()) {
-      setStatusMessage('Vui lòng mở hoặc quét dự án trước khi dịch.');
+      const msg = 'Vui lòng mở hoặc quét dự án trước khi dịch.';
+      setStatusMessage(msg);
+      setTranslationError(msg);
       return;
     }
     if (aiEngine === 'llama.cpp' && !modelPath.trim() && !serverUrl.trim()) {
-      setStatusMessage('Vui lòng nhập đường dẫn file GGUF model (.gguf) hoặc URL máy chủ suy luận.');
+      const msg = 'Vui lòng nhập đường dẫn file GGUF model (.gguf) hoặc URL máy chủ suy luận (server_url).';
+      setStatusMessage(msg);
+      setTranslationError(msg);
       return;
     }
     setIsLoading(true);
     setStatusMessage(`Đang chạy dịch tự động qua động cơ ${aiEngine}...`);
     try {
       const res = await startTranslation({
-        db_path: dbPath,
+        db_path: dbPath.trim(),
         engine: aiEngine,
         model_path: modelPath.trim() || undefined,
         server_url: serverUrl.trim() || undefined,
@@ -203,10 +263,18 @@ export const App: React.FC = () => {
       setTranslatedProgress(res.translated_count);
       const count = await getTotalCount();
       setTotalCount(count);
-      setStatusMessage(`Đã hoàn tất dịch lô ${res.translated_count} câu thoại!`);
+      if (res.translated_count === 0) {
+        setTranslationSuccess('Đã hoàn tất kiểm tra: Toàn bộ câu thoại đã được dịch hoặc không có câu nào ở trạng thái chờ dịch (PENDING).');
+        setStatusMessage('Không có câu thoại nào cần dịch thêm.');
+      } else {
+        setTranslationSuccess(`Đã hoàn tất dịch lô ${res.translated_count} câu thoại vào cơ sở dữ liệu!`);
+        setStatusMessage(`Đã hoàn tất dịch lô ${res.translated_count} câu thoại!`);
+      }
       await fetchSpecs();
     } catch (err: any) {
-      setStatusMessage(`Lỗi dịch: ${err.message || err}`);
+      const msg = `Lỗi dịch: ${err.message || err}`;
+      setStatusMessage(msg);
+      setTranslationError(msg);
     } finally {
       setIsLoading(false);
       try {
@@ -394,6 +462,31 @@ export const App: React.FC = () => {
                   </div>
                 </div>
               )}
+
+              {/* Option to Open Existing Project Database */}
+              <div className="flex flex-col gap-2 pt-4 border-t border-[#313244]">
+                <div className="flex items-center gap-2">
+                  <Database className="w-4 h-4 text-[#89b4fa]" />
+                  <label className="text-xs font-semibold text-[#bac2de]">Hoặc Mở Tệp Cơ Sở Dữ Liệu SQLite Đã Có (.sqlite)</label>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={dbPath}
+                    onChange={(e) => setDbPath(e.target.value)}
+                    placeholder="/duong/dan/toi/renslate_project.sqlite..."
+                    className="flex-1 bg-[#11111b] border border-[#313244] rounded-xl px-4 py-2.5 text-xs text-[#cdd6f4] font-mono focus:outline-none focus:border-[#89b4fa] transition-colors"
+                  />
+                  <button
+                    onClick={() => handleOpenExistingDb()}
+                    disabled={isLoading || !dbPath.trim()}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-[#313244] hover:bg-[#45475a] text-[#89b4fa] text-xs font-bold rounded-xl transition-all disabled:opacity-50"
+                  >
+                    <Database className="w-4 h-4" />
+                    Mở Database
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -449,6 +542,52 @@ export const App: React.FC = () => {
                   Dọn VRAM
                 </button>
               </div>
+
+              {/* Project Database Status & Quick Loader in Tab 3 */}
+              {dbPath ? (
+                <div className="flex items-center justify-between p-3.5 bg-[#11111b] border border-[#313244] rounded-xl text-xs">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Database className="w-4 h-4 text-[#89b4fa] shrink-0" />
+                    <span className="text-[#a6adc8] shrink-0">CSDL dự án:</span>
+                    <span className="font-mono text-[#cdd6f4] truncate max-w-sm" title={dbPath}>{dbPath}</span>
+                    <span className="px-2 py-0.5 rounded-full bg-[#89b4fa]/20 text-[#89b4fa] text-[10px] font-bold shrink-0">
+                      {totalCount.toLocaleString()} câu thoại
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setActiveTab('project')}
+                    className="text-[11px] text-[#89b4fa] hover:underline shrink-0"
+                  >
+                    Đổi CSDL
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-start gap-3 p-4 bg-[#fab387]/10 border border-[#fab387]/30 rounded-xl text-xs text-[#fab387]">
+                  <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+                  <div className="flex-1 flex flex-col gap-2">
+                    <div className="font-bold text-sm">Chưa Nạp Cơ Sở Dữ Liệu Dự Án</div>
+                    <p className="text-[#cdd6f4]">
+                      Vui lòng nhập đường dẫn tệp .sqlite hoặc quét thư mục game ở Tab 1 trước khi bắt đầu dịch.
+                    </p>
+                    <div className="flex gap-2 mt-1">
+                      <input
+                        type="text"
+                        value={dbPath}
+                        onChange={(e) => setDbPath(e.target.value)}
+                        placeholder="/duong/dan/toi/renslate_project.sqlite..."
+                        className="flex-1 bg-[#11111b] border border-[#313244] rounded-lg px-3 py-1.5 text-xs text-[#cdd6f4] font-mono focus:outline-none focus:border-[#89b4fa]"
+                      />
+                      <button
+                        onClick={() => handleOpenExistingDb()}
+                        disabled={!dbPath.trim() || isLoading}
+                        className="px-4 py-1.5 bg-[#89b4fa] hover:bg-[#b4befe] text-[#11111b] font-bold rounded-lg transition-all disabled:opacity-50"
+                      >
+                        Nạp Database
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Hardware Real-time Status Banner */}
               {systemSpecs && (
@@ -549,15 +688,66 @@ export const App: React.FC = () => {
                   )}
 
                   {/* External llama-server URL alternative */}
-                  <div className="flex flex-col gap-1.5 pt-2 border-t border-[#313244]">
-                    <label className="text-xs font-semibold text-[#bac2de]">Hoặc kết nối máy chủ llama-server bên ngoài (OpenAI API)</label>
-                    <input
-                      type="text"
-                      value={serverUrl}
-                      onChange={(e) => setServerUrl(e.target.value)}
-                      placeholder="http://localhost:8080/v1 (Để trống nếu chạy tệp GGUF trực tiếp)"
-                      className="w-full bg-[#181825] border border-[#313244] rounded-xl px-4 py-2 text-xs text-[#cdd6f4] font-mono focus:outline-none focus:border-[#89b4fa]"
-                    />
+                  <div className="flex flex-col gap-2 pt-2 border-t border-[#313244]">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-semibold text-[#bac2de]">
+                        Hoặc kết nối máy chủ llama-server bên ngoài (OpenAI API - Khuyên Dùng Cho Model Lớn)
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setServerUrl('http://127.0.0.1:8080/v1');
+                          setConnectionTest(null);
+                        }}
+                        className="text-[11px] text-[#89b4fa] hover:underline font-mono"
+                      >
+                        ⚡ Điền nhanh: http://127.0.0.1:8080/v1
+                      </button>
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={serverUrl}
+                        onChange={(e) => {
+                          setServerUrl(e.target.value);
+                          setConnectionTest(null);
+                        }}
+                        placeholder="http://127.0.0.1:8080/v1 (Để trống nếu chạy tệp GGUF trực tiếp)"
+                        className="flex-1 bg-[#181825] border border-[#313244] rounded-xl px-4 py-2 text-xs text-[#cdd6f4] font-mono focus:outline-none focus:border-[#89b4fa]"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleTestConnection}
+                        disabled={isTestingConnection}
+                        className="flex items-center gap-1.5 px-3.5 py-2 bg-[#313244] hover:bg-[#45475a] text-[#cdd6f4] text-xs font-semibold rounded-xl transition-all disabled:opacity-50 shrink-0"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isTestingConnection ? 'animate-spin' : ''}`} />
+                        Kiểm tra kết nối
+                      </button>
+                    </div>
+
+                    {/* Connection Test Status */}
+                    {connectionTest && (
+                      <div
+                        className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${
+                          connectionTest.online
+                            ? 'bg-[#a6e3a1]/10 text-[#a6e3a1] border border-[#a6e3a1]/30'
+                            : 'bg-[#f38ba8]/10 text-[#f38ba8] border border-[#f38ba8]/30'
+                        }`}
+                      >
+                        {connectionTest.online ? (
+                          <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        ) : (
+                          <AlertCircle className="w-4 h-4 shrink-0" />
+                        )}
+                        <span className="truncate">{connectionTest.message}</span>
+                        {connectionTest.models && connectionTest.models.length > 0 && (
+                          <span className="ml-auto font-mono text-[10px] bg-[#11111b] px-2 py-0.5 rounded">
+                            {connectionTest.models[0]}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* OOM Assessment Card */}
@@ -630,6 +820,40 @@ export const App: React.FC = () => {
                 </div>
               )}
 
+              {/* Inline Error Banner */}
+              {translationError && (
+                <div className="flex items-start gap-2.5 p-3.5 bg-[#f38ba8]/15 border border-[#f38ba8]/40 rounded-xl text-xs text-[#f38ba8]">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <span className="font-bold">Lỗi: </span>
+                    <span>{translationError}</span>
+                  </div>
+                  <button
+                    onClick={() => setTranslationError('')}
+                    className="text-[#f38ba8] hover:text-[#cdd6f4] font-bold text-sm leading-none ml-2"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              {/* Inline Success Banner */}
+              {translationSuccess && (
+                <div className="flex items-start gap-2.5 p-3.5 bg-[#a6e3a1]/15 border border-[#a6e3a1]/40 rounded-xl text-xs text-[#a6e3a1]">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <span className="font-bold">Thành công: </span>
+                    <span>{translationSuccess}</span>
+                  </div>
+                  <button
+                    onClick={() => setTranslationSuccess('')}
+                    className="text-[#a6e3a1] hover:text-[#cdd6f4] font-bold text-sm leading-none ml-2"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
               {/* Start Button */}
               <button
                 onClick={handleStartAi}
@@ -637,7 +861,7 @@ export const App: React.FC = () => {
                 className="flex items-center justify-center gap-2 px-5 py-3 bg-gradient-to-r from-[#cba6f7] to-[#89b4fa] hover:opacity-90 text-[#11111b] text-xs font-bold rounded-xl transition-all shadow-lg shadow-[#cba6f7]/20 disabled:opacity-50"
               >
                 <Sparkles className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-                {isLoading ? 'Đang Dịch Bằng GGUF...' : 'Bắt Đầu Dịch Tự Động'}
+                {isLoading ? 'Đang Thực Hiện Dịch...' : 'Bắt Đầu Dịch Tự Động'}
               </button>
 
               {/* Live Translation Progress Details */}

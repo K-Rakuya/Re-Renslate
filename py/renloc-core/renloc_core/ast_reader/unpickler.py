@@ -345,3 +345,76 @@ def read_rpyc_slots(data: bytes) -> Dict[int, Any]:
         result[1] = read_rpyc_data(data, slot=1)
 
     return result
+
+
+def extract_ast_nodes(ast_root: Any) -> List[Any]:
+    """
+    Recursively flattens and traverses nested Ren'Py AST containers
+    (Label blocks, If/entries, Menu/items, While blocks, Translate blocks).
+    """
+    results: List[Any] = []
+
+    def _walk(node: Any) -> None:
+        if not node:
+            return
+        if isinstance(node, (list, tuple)):
+            for item in node:
+                _walk(item)
+            return
+
+        results.append(node)
+
+        # Traverse nested blocks in Ren'Py AST nodes
+        if hasattr(node, "block") and isinstance(node.block, (list, tuple)):
+            _walk(node.block)
+        if hasattr(node, "entries") and isinstance(node.entries, (list, tuple)):
+            for entry in node.entries:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    _walk(entry[1])
+        if hasattr(node, "items") and isinstance(node.items, (list, tuple)):
+            for item in node.items:
+                if isinstance(item, (list, tuple)) and len(item) >= 3 and item[2]:
+                    _walk(item[2])
+
+    if (
+        isinstance(ast_root, (tuple, list))
+        and len(ast_root) == 2
+        and isinstance(ast_root[0], dict)
+        and isinstance(ast_root[1], (list, tuple))
+    ):
+        _walk(ast_root[1])
+    else:
+        _walk(ast_root)
+
+    return results
+
+
+def read_rpyc_dialogues(
+    data: bytes,
+    normalizer: Optional[Any] = None,
+    default_filename: Optional[str] = None,
+) -> List[Any]:
+    """
+    Safely unpacks a compiled Ren'Py script (.rpyc/.rpymc), extracts all its AST statements
+    (traversing inner labels, conditions, and menus), and returns normalized DialogueEntity objects.
+    """
+    from renloc_core.static_graph.dialogue_normalizer import DialogueNormalizer
+
+    if not data:
+        return []
+
+    try:
+        slots = read_rpyc_slots(data)
+    except Exception:
+        slots = {1: read_rpyc_data(data)}
+
+    ast_root = slots.get(1) or slots.get(2)
+    if ast_root is None and slots:
+        ast_root = next(iter(slots.values()))
+
+    if not ast_root:
+        return []
+
+    nodes = extract_ast_nodes(ast_root)
+    norm = normalizer or DialogueNormalizer()
+    return norm.normalize_stream(nodes, default_filename=default_filename)

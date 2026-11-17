@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from renloc_core.ast_reader.unpickler import NativeRenpyUnpickler
+from renloc_core.ast_reader.unpickler import read_rpyc_dialogues
 from renloc_core.db_writer import DbWriter
 from renloc_core.synthesizer import (
     FontAuditor,
@@ -64,7 +64,12 @@ def cmd_scan(args: argparse.Namespace) -> None:
     writer = DbWriter(db_path)
     init_schema(writer.raw_connection)
 
-    rpyc_files = [f for f in files if f.endswith(".rpyc") or f.endswith(".rpymc")]
+    rpyc_files = [
+        f for f in files
+        if (f.endswith(".rpyc") or f.endswith(".rpymc"))
+        and not f.startswith("renpy/")
+        and not f.startswith("common/")
+    ]
     print(f"[*] Found {len(rpyc_files)} compiled Ren'Py script files (.rpyc/.rpymc)")
 
     extracted_count = 0
@@ -76,28 +81,24 @@ def cmd_scan(args: argparse.Namespace) -> None:
                 else:
                     data = (game_dir / rpyc_rel).read_bytes()
 
-                # Parse AST safely via NativeRenpyUnpickler
-                unpickler = NativeRenpyUnpickler(data)
-                stmts = unpickler.load_stmts()
-                if stmts:
-                    dialogues = normalizer.normalize_statements(stmts, rpyc_rel)
-                    for d in dialogues:
-                        cursor.execute(
-                            """
-                            INSERT OR IGNORE INTO translation_units
-                            (unit_identifier, source_text, speaker, status, row_order, file_path, line_number)
-                            VALUES (?, ?, ?, 'PENDING', ?, ?, ?)
-                            """,
-                            (
-                                d.translation_id,
-                                d.what,
-                                d.who,
-                                extracted_count + 1,
-                                d.filename,
-                                d.linenumber,
-                            ),
-                        )
-                        extracted_count += 1
+                dialogues = read_rpyc_dialogues(data, normalizer=normalizer, default_filename=rpyc_rel)
+                for d in dialogues:
+                    extracted_count += 1
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO translation_units
+                        (unit_identifier, source_text, speaker, status, row_order, file_path, line_number)
+                        VALUES (?, ?, ?, 'PENDING', ?, ?, ?)
+                        """,
+                        (
+                            d.translation_id,
+                            d.what,
+                            d.who,
+                            extracted_count,
+                            d.filename or rpyc_rel,
+                            d.linenumber or 1,
+                        ),
+                    )
             except Exception as e:
                 # Continue on non-fatal script parse warnings
                 continue

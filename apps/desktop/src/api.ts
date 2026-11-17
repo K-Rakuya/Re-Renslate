@@ -169,6 +169,17 @@ export interface StartTranslationParams {
   limit?: number;
 }
 
+export interface ConnectionTestResult {
+  online: boolean;
+  message: string;
+  models?: string[];
+}
+
+export async function testInferenceConnection(serverUrl: string): Promise<ConnectionTestResult> {
+  const res = await callSidecarRpc('test_inference_connection', { server_url: serverUrl });
+  return res as ConnectionTestResult;
+}
+
 export async function getSystemSpecs(): Promise<SystemSpecs> {
   const res = await callSidecarRpc('get_system_specs', {});
   return res as SystemSpecs;
