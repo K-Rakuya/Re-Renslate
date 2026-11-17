@@ -51,6 +51,7 @@ def sync_pending_outbox(
     Returns:
         Number of outbox entries processed in this batch.
     """
+    conn = getattr(conn, "_conn", conn)
     cursor = conn.cursor()
     owns_tx = conn.getautocommit()
 

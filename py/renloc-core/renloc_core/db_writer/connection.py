@@ -296,6 +296,10 @@ class DbWriter:
         with self._write_lock:
             return hot_backup(self._conn, dest_path=dest_path, overwrite=overwrite)
 
+    def getautocommit(self) -> bool:
+        """Returns True if the connection is currently in autocommit mode."""
+        return self._conn.getautocommit()
+
     def checkpoint(self, mode: int = apsw.SQLITE_CHECKPOINT_PASSIVE) -> Tuple[int, int]:
         """
         Execute WAL checkpoint:
