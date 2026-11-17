@@ -34,6 +34,29 @@ pub struct RpcResponse<T> {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CsprngToken {
+    bytes: [u8; 32],
+    hex: String,
+}
+
+impl CsprngToken {
+    pub fn generate() -> Self {
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let hex = hex::encode(bytes);
+        Self { bytes, hex }
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.bytes
+    }
+
+    pub fn as_hex(&self) -> &str {
+        &self.hex
+    }
+}
+
 pub struct RpcClient {
     pub session_token: String,
     pub endpoint: PathBuf,
@@ -41,13 +64,9 @@ pub struct RpcClient {
 
 impl RpcClient {
     pub fn new(endpoint: PathBuf) -> Self {
-        // Generate cryptographically secure 256-bit session token
-        let mut token_bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut token_bytes);
-        let session_token = hex::encode(token_bytes);
-
+        let token = CsprngToken::generate();
         Self {
-            session_token,
+            session_token: token.as_hex().to_string(),
             endpoint,
         }
     }

@@ -3,6 +3,7 @@
 
 pub mod job_guard;
 pub mod rpc_client;
+pub mod sidecar;
 
 use std::sync::Mutex;
 use tauri::State;
