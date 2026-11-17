@@ -20,6 +20,7 @@ import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch
+import unittest
 
 import apsw
 import pytest
