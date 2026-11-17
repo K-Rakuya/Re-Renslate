@@ -2,6 +2,8 @@
 //! renloc_native: PyO3 ABI3 Python extension module exporting high-performance
 //! Rust capabilities (RPA archive reader, VFS, OpenType HarfBuzz shaper, cmap auditor).
 
+#![allow(clippy::useless_conversion)]
+
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -30,6 +32,18 @@ impl PyRpaArchive {
         let bytes = self.inner.read_file(&filename).map_err(|e| PyIOError::new_err(e.to_string()))?;
         Ok(PyBytes::new_bound(py, &bytes))
     }
+
+    pub fn is_multipart(&self) -> bool {
+        self.inner.is_multipart()
+    }
+
+    pub fn part_count(&self) -> usize {
+        self.inner.part_count()
+    }
+
+    pub fn is_fallback_required(&self) -> bool {
+        self.inner.is_fallback_required()
+    }
 }
 
 #[pyclass(name = "VfsLayer")]
@@ -54,6 +68,29 @@ impl PyVfsLayer {
     pub fn mount_archive(&mut self, path: String) -> PyResult<()> {
         self.inner.mount_archive(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
         Ok(())
+    }
+
+    pub fn mount_multipart_archive(&mut self, paths: Vec<String>) -> PyResult<()> {
+        self.inner.mount_multipart_archive(&paths).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn mount_fallback_directory(&mut self, fallback_dir: String) -> PyResult<()> {
+        self.inner.mount_fallback_directory(fallback_dir).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn requires_in_game_fallback(&self) -> bool {
+        self.inner.requires_in_game_fallback()
+    }
+
+    pub fn generate_in_game_fallback(&self) -> String {
+        self.inner.generate_in_game_fallback()
+    }
+
+    pub fn write_in_game_fallback(&self, target_game_dir: String) -> PyResult<String> {
+        let path = self.inner.write_in_game_fallback(target_game_dir).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        Ok(path.to_string_lossy().to_string())
     }
 
     pub fn read_file<'py>(&self, py: Python<'py>, virtual_path: String) -> PyResult<Bound<'py, PyBytes>> {

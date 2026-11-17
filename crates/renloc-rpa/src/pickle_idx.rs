@@ -73,6 +73,7 @@ impl<'a> InertPickleVm<'a> {
         }
     }
 
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     fn execute(&mut self) -> Result<PickleValue, PickleError> {
         loop {
             let pos = self.reader.position() as usize;
@@ -212,6 +213,11 @@ impl<'a> InertPickleVm<'a> {
                 b't' => {
                     let items = self.pop_mark()?;
                     self.stack.push(PickleValue::Tuple(items));
+                }
+                // LIST (0x6c, 'l')
+                b'l' => {
+                    let items = self.pop_mark()?;
+                    self.stack.push(PickleValue::List(items));
                 }
                 // APPEND (0x61, 'a')
                 b'a' => {

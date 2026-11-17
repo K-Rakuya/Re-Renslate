@@ -46,10 +46,7 @@ impl SidecarSupervisor {
 
     pub fn is_running(&mut self) -> bool {
         if let Some(child) = &mut self.child {
-            match child.try_wait() {
-                Ok(None) => true,
-                _ => false,
-            }
+            matches!(child.try_wait(), Ok(None))
         } else {
             false
         }

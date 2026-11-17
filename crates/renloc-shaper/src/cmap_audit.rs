@@ -84,7 +84,7 @@ impl CmapAuditor {
         audit: &FontAuditResult,
     ) -> String {
         let mut dsl = String::new();
-        dsl.push_str(&format!("init python:\n"));
+        dsl.push_str("init python:\n");
         dsl.push_str(&format!("    renpy.register_font_group(\"{}\",\n", group_name));
         dsl.push_str(&format!("        FontGroup().add(\"{}\", 0x0020, 0x007e)\n", primary_font_path));
 

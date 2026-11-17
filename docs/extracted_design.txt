@@ -1,0 +1,257 @@
+
+Kiến trúc tổng thể và Kế hoạch cài đặt ứng dụng bản địa hóa Ren'Py tự hành Local-First
+Hệ thống bản địa hóa game Ren'Py tự hành local-first được thiết kế theo kiến trúc đa tiến trình đồng bộ trên 6 phân hệ liên kết chặt chẽ: monorepo đa nền tảng (Cargo/PyO3 abi3, Tauri v2, uv + python-build-standalone và hai môi trường Python cô lập), lõi giải mã nhị phân .rpa kết hợp trình đọc AST không thực thi mã, bộ phân tích tĩnh dựng đồ thị tri thức ngữ cảnh, cơ sở dữ liệu lai SQLite WAL + FTS5 + sqlite-vec đi cùng lớp điều phối Tauri v2, động cơ suy luận LLM cục bộ kèm kiểm định chất lượng cô lập, và tầng định hình chữ native cùng runtime hook an toàn cho Ren'Py (nhánh phát hành mới nhất ghi nhận là 8.5.3 tính tới tháng 11/2026). Nguyên tắc xuyên suốt của bản thiết kế là khóa chặt các biên giới rủi ro về ABI, đồng thời dữ liệu và bảo mật: cách ly unbabel-comet==2.2.7 (ghim numpy < 2.0) khỏi tiến trình chính dùng numpy 2.x và vLLM bằng giao tiếp JSON-RPC qua stdio, thay thế pickle.load() bằng bộ diễn giải opcode tĩnh, loại bỏ SQLite Session Extension khỏi đồng bộ bảng ảo FTS5/sqlite-vec, và bịt bề mặt tấn công RCE qua dill.loads() trên SGLang CustomLogitProcessor (CVE-2026-7304).
+Về mức độ kiểm chứng kỹ thuật, các đặc tả liên quan đến định dạng RPA-1.0/.rpi, RPA-2.0, RPA-3.0, biến thể RPA-3.2/4.0/ALT-1.0/ZiX, cơ chế gộp TranslateSay và hàm Say.get_code(), đường ống nội suy r/s -> t -> i -> q -> u -> l -> c của renpy.substitutions, giới hạn của SQLite Session Extension và VACUUM INTO, cấu trúc LogitsProcessor trên cả hai nhánh vLLM V1, lỗ hổng CVE-2026-7304 trên SGLang, cũng như hành vi SDL_VIDEODRIVER=dummy đều bám sát tài liệu chính thức, mã nguồn tham chiếu và cảnh báo bảo mật đã xác minh. Ngược lại, các thông số nội bộ cấp thấp chưa có tài liệu gốc trong hồ sơ rà soát hiện tại—bao gồm cấu trúc byte chi tiết của ZiX-12A/12B, RPYCv3 stub, lược đồ __slots__ trên PyCode/sl2.slast/LayeredImage bản Ren'Py 8.4+, cờ SGLANG_EXPERIMENTAL_HIRADIX_CACHE, full-shape logits, chi tiết tích hợp XGrammar/llguidance/llama-cpp-python, cùng điểm chuẩn định lượng cho PyChD + PyLingual + SAILR + EtherVal, k-CFA, TEaR, MBR, COMETKiwi FP16 và GEMBA-MQM v2—được định nghĩa rõ ràng là đặc tả kỹ thuật mục tiêu và gắn trực tiếp vào các cổng kiểm chứng tích hợp từ Pha 0 đến Pha 5 trước khi đóng băng mã nguồn.
+1. Kiến trúc Monorepo, Chuỗi Build Đa Nền Tảng và Cô lập Phụ Thuộc
+Cấu trúc thư mục mã nguồn đầy đủ
+Toàn bộ dự án hợp nhất trong một monorepo dùng Cargo workspace cho các crate Rust hiệu năng cao, maturin để xuất mô-đun Python ABI3, pnpm cho giao diện Tauri v2 + React, và hai workspace Python độc lập quản lý qua uv. Ranh giới giữa các thư mục được thiết kế nhằm ngăn chặn rò rỉ phụ thuộc C-extension và bảo đảm mọi mô-đun giao tiếp qua hợp đồng dữ liệu chặt chẽ (MessagePack trên IPC nội bộ, JSON-RPC theo dòng trên stdio cho worker QE, và chuẩn ABI3 giữa Rust với Python).
+Đường dẫn thư mục / tệp chính
+Ngôn ngữ / Công cụ
+Loại mô-đun
+Trách nhiệm và giao diện đồng bộ
+Cargo.toml, rust-toolchain.toml, .cargo/config.toml
+Rust (Workspace)
+Gốc Rust workspace
+Khóa phiên bản toolchain, kích hoạt LTO cho bản release, định nghĩa target-triple đa nền tảng (x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu, aarch64-apple-darwin).
+crates/renloc-rpa/src/ (lib.rs, header.rs, v1_v3.rs, pickle_idx.rs, vfs.rs)
+Rust (memmap2, flate2)
+Library crate
+Nhận diện chữ ký .rpa/.rpi, phục hồi custom 8-byte header, hợp nhất multi-part/multi-archive VFS, giải nén lát byte on-demand.
+crates/renloc-shaper/src/ (lib.rs, cmap_audit.rs, bidi_hb.rs)
+Rust (harfruzz, freetype/FFI)
+Library crate
+Định hình chữ OpenType/BiDi, kiểm tra bảng cmap 134 ký tự tiếng Việt NFC và đo hộp giới hạn văn bản tránh tràn UI.
+crates/renloc-db/src/ (lib.rs, readonly_pool.rs, fts_vec.rs)
+Rust (rusqlite, sqlite-vec)
+Library crate
+Đăng ký sqlite3_auto_extension (rusqlite::auto_extension), cung cấp đọc song song WAL + FTS5 + vector cho UI 300k dòng.
+crates/renloc-pyext/src/lib.rs, pyproject.toml
+Rust (pyo3, maturin)
+ABI3 Python extension
+Xuất renloc_native chuẩn abi3 tích hợp renloc-rpa và renloc-shaper vào .venvs/core.
+apps/desktop/src-tauri/src/ (main.rs, sidecar.rs, job_guard.rs, rpc_client.rs, capabilities/)
+Rust (Tauri v2)
+Desktop Host
+Điều phối bootstrapper sidecar, kiểm tra Capabilities ACL, giám hộ Job Object / process group, xác thực UDS/Named Pipe MessagePack.
+apps/desktop/src/ (components/VirtualGrid.tsx, views/, ipc/)
+TypeScript / React
+Frontend UI
+Bảng dịch ảo hóa 300k dòng phân trang con trỏ SQLite, màn hình kiểm tra đồ thị hội thoại và quản trị VRAM/LLM.
+py/renloc-core/renloc_core/ (ast_reader/, static_graph/, db_writer/, llm_engine/, synthesizer/, rpc_server.py)
+Python 3.12 (uv .venvs/core)
+Sidecar chính
+Đọc AST tĩnh, dựng ICFG/đồ thị xưng hô, làm Single-Writer SQLite (apsw), lập lịch DAG, gọi LLM và kết xuất gói .rpy.
+py/renloc-core/renloc_core/decompiler/
+Python 3.12
+Phân giải bytecode
+Bao bọc xdis, bộ chuyển đổi PyChD + PyLingual + SAILR và mô-đun kiểm định tương đương EtherVal.
+py/renloc-qe/renloc_qe/ (worker.py, scorer.py)
+Python 3.12 (uv .venvs/qe)
+Worker QE cô lập
+Nạp unbabel-comet==2.2.7 với numpy 1.26.x, nhận lô chấm điểm qua JSON-RPC stdio.
+runtime/renpy_hook/ (renloc_runtime_hook.rpy, templates/)
+Ren'Py DSL + Py2/Py3
+Gói nhúng in-game
+Bộ hook tương thích ngược cho game mục tiêu hỗ trợ Revertable* và ngắt mạch bão 90 khung hình.
+tests/ (diff_sdk/, headless/, save_emi/, fixtures/)
+Pytest + Cargo + SDK
+Bộ kiểm chứng
+Kiểm thử sai lệch AST/ID với Ren'Py SDK, chạy headless Linux/macOS, Save/Rollback EMI và fuzzing thẻ văn bản.
+Chuỗi công cụ build và đóng gói đa nền tảng
+Đối với phần mở rộng Rust sang Python (crates/renloc-pyext), chuỗi build sử dụng maturin với cấu hình mục tiêu abi3 cho Python 3.12 (abi3-py312 theo chuẩn PyO3/maturin; cần xác nhận cờ biên dịch trên từng OS ở Pha 0 vì hồ sơ tài liệu hiện có chưa chứa cấu hình mẫu maturin cụ thể), cho phép sinh một tệp nhị phân .pyd/.so ổn định trên mọi bản vá nhỏ thuộc nhánh Python 3.12+.
+Về đóng gói ứng dụng desktop hoàn chỉnh qua Tauri v2 bundler (apps/desktop/src-tauri/tauri.conf.json), kiến trúc chọn uv kết hợp python-build-standalone thay cho PyInstaller. Kinh nghiệm thực tế trong hệ sinh thái Tauri-Python cho thấy những công cụ đóng gói từng dựa vào PyInstaller như VoiceStudio đã phải loại bỏ PyInstaller do lỗi gãy cấu trúc venv và đường dẫn import động, trong khi các kiến trúc đa mô-đun hiện đại như Effigy sử dụng trực tiếp uv cùng python-build-standalone để ghim chặt PyTorch, thư viện CUDA và cây phụ thuộc tái lập. Lưu ý rằng hồ sơ hiện tại không có benchmark độc lập so sánh thời gian khởi động nguội hoặc dung lượng gói cuối cùng giữa PyInstaller và python-build-standalone; lựa chọn này xuất phát từ yêu cầu cô lập hai virtualenv độc lập cạnh nhau và tránh lỗi đóng băng hook động của thư viện AI. Trên bản phân phối cài đặt cho Windows, Linux và macOS, Tauri v2 chỉ đóng gói trực tiếp một bootstrapper viết bằng Rust mang hậu tố target-triple chuẩn trong externalBin, còn bản runtime python-build-standalone cùng khóa uv.lock nằm trong resources/ để khởi tạo hoặc xác minh hai môi trường ảo gọn nhẹ ngay lần chạy đầu.
+Ma trận cô lập Virtualenv giải quyết xung đột phụ thuộc
+Xung đột lõi của hệ thống phát sinh từ việc unbabel-comet==2.2.7 kế thừa khai báo numpy = "^1.20.0" (numpy < 2.0, thường ghim về 1.26.4 trong môi trường PyTorch/CUDA), đối đầu trực diện với vLLM và các ngăn xếp transformers mới yêu cầu numpy 2.x. Tài liệu của lm-polygraph xác nhận xung đột này và lưu ý mẹo cài unbabel-comet --no-deps, song việc bỏ qua kiểm tra phụ thuộc rất dễ làm gãy ABI nhị phân giữa PyTorch, scipy và pandas. Dù trên nhánh phát triển master của kho mã nguồn Unbabel/COMET từ tháng 2–3/2026 đã xuất hiện commit nới lỏng ràng buộc numpy, pandas và transformers 5.x, bản phát hành ghim chuẩn unbabel-comet==2.2.7 vẫn giải quyết numpy 1.x. Do đó, dự án thiết lập ranh giới tiến trình tuyệt đối giữa ba môi trường ảo dưới sự điều phối của uv và Python 3.12 (tương thích dải Python 3.9–3.12 của unbabel-comet):
+Môi trường ảo
+Phiên bản Python & NumPy
+Tập gói cài đặt chính
+Ranh giới giao tiếp với hệ thống
+.venvs/core
+Python 3.12 (python-build-standalone), numpy >= 2.0
+renloc_native (abi3), apsw, msgspec, uharfbuzz, xdis, llama-cpp-python, pynvml
+Giao tiếp trực tiếp với Tauri host qua UDS/Named Pipe MessagePack RPC; nắm quyền Single-Writer duy nhất trên SQLite.
+.venvs/inference (tùy chọn tách riêng khi chạy local server GPU)
+Python 3.12, numpy >= 2.0
+vLLM (V1), SGLang, torch, transformers, xgrammar / llguidance
+Chạy daemon cục bộ lắng nghe 127.0.0.1 sau lớp xác thực token/HMAC để phục vụ .venvs/core.
+.venvs/qe
+Python 3.12, numpy == 1.26.4 (< 2.0)
+unbabel-comet==2.2.7, pytorch-lightning, sentencepiece, torch
+Tiến trình thường trú cô lập nhận cặp câu theo lô qua stdin/stdout JSON-RPC theo dòng, mô phỏng mô hình xcomet-mcp-server.
+2. Lõi Giải Mã Nhị Phân Rust/PyO3 và Trình Đọc Phục Hồi AST Python
+Lõi giải mã đa biến thể lưu trữ RPA trong Rust/PyO3
+Theo kiểm chứng từ mã nguồn renpy/loader.py (tới commit 4b22c3d ngày 03/11/2026 trên nhánh Ren'Py 8.5.3 được đối chiếu bởi công cụ rà soát RPA trực tuyến), engine Ren'Py gốc chỉ giải mã ba định dạng chính thức: RPA-1.0 dùng tệp chỉ mục .rpi nén zlib bắt đầu bằng b"\x78\x9c" đi kèm tệp dữ liệu .rpa, RPA-2.0 (chữ ký "RPA-2.0 "), và RPA-3.0 (chữ ký "RPA-3.0 " kèm offset và khóa XOR 32-bit, sử dụng hàm deobfuscate_with_key()). Tuy nhiên, trong thực tế phân phối game cộng đồng và thương mại, nhiều trình đóng gói và công cụ mở rộng như unrpa 2.3.0 hay rpx bổ sung các biến thể RPA-3.2, RPA-4.0, ALT-1.0, ZiX-12A, ZiX-12B, cũng như các trò chơi đổi 8 byte đầu tiên trong archiver.rpy/loader.py thành chuỗi 7-bit ASCII bất kỳ (chẳng hạn "12345678" hoặc "ARC-3.0 " đi kèm đuôi .ARC) mà vẫn bảo toàn định dạng hậu tố %016x %08x\n.
+Để tránh đọc toàn bộ tệp archive hàng gigabyte vào bộ nhớ (bài học tối ưu bộ nhớ từ quá trình nâng cấp của unrpa và trình duyệt archive hiện đại), crates/renloc-rpa dùng memmap2 ánh xạ tệp và cắt lát byte theo yêu cầu. Tệp chỉ mục RPA chứa cấu trúc dict pickle nén ZLIB (Little Endian), nhưng thay vì truyền chỉ mục thô sang Python pickle.loads(), crates/renloc-rpa/src/pickle_idx.rs triển khai bộ giải mã opcode pickle thu hẹp thuần Rust chỉ chấp nhận dữ liệu cơ sở (DICT, LIST, TUPLE, BYTES/BINUNICODE, INT/LONG, MARK, SETITEM/SETITEMS) để trích các bộ ba (offset, length, prefix) an toàn tuyệt đối.
+Biến thể Archive
+Dấu hiệu nhận diện ở Header / Cặp tệp
+Chiến lược giải mã trong renloc-rpa và Tuyến Fallback
+Trạng thái bằng chứng kỹ thuật
+RPA-1.0
+Cặp <tên>.rpi (byte đầu 0x78 0x9c) + <tên>.rpa
+Giải nén zlib từ .rpi để lấy từ điển chỉ mục và cắt lát trực tiếp từ .rpa.
+Đã xác minh qua đặc tả RPAv1ArchiveHandler của renpy/loader.py.
+RPA-2.0
+Dòng đầu ASCII bắt đầu bằng RPA-2.0 <offset_hex[span_59](start_span)[span_59](end_span)[span_63](start_span)[span_63](end_span)>\n
+Giải mã trực tiếp trong Rust bằng bộ đọc pickle tĩnh; không dùng khóa XOR.
+Đã xác minh qua RPAv2ArchiveHandler.
+RPA-3.0
+Dòng đầu RPA-3.0 <offset_16_hex> <key_8_hex>\n
+Đọc chỉ mục tại offset, giải nén zlib, XOR mọi offset và dlen với khóa 32-bit.
+Đã xác minh đầy đủ qua RPAv3ArchiveHandler và archiver.rpy.
+Custom 8-byte Header (ARC-3.0, chuỗi tùy biến)
+8 byte đầu bất kỳ nhưng phần sau khớp ^.{8}[0-9a-fA-F]{16} [0-9a-fA-F]{8}(\s[0-9a-fA-F]+)*\r?\n$
+Kích hoạt chế độ khôi phục tự động: bỏ qua 8 byte chữ ký, giữ nguyên parser RPA-3.0 cho offset và khóa XOR.
+Ghi nhận thực hành chỉnh 8 byte 7-bit ASCII trên diễn đàn LemmaSoft và ReWiki.
+Multi-archive / Multi-part chunks
+Nhiều tệp .rpa (archive.rpa[span_74](start_span)[span_74](end_span)[span_76](start_span)[span_76](end_span), scripts.rpa, images.rpa) hoặc tệp chia mảnh nối tiếp
+Tầng VfsLayer nạp mọi archive theo thứ tự từ điển, cho phép tệp rời trong game/ ghi đè archive và hỗ trợ ghép offset liên mảnh.
+Việc tách nhiều .rpa được xác nhận; đặc tả ghép mảnh chunk đơn lẻ là thiết kế bổ sung chưa có mẫu chuẩn trong tài liệu hiện có.
+RPA-3.2, RPA-4.0, ALT-1.0
+Chữ ký RPA-3.2 , RPA-4.0 , ALT-1.0
+Khung giải mã Rust cho phép cắm bộ giải khóa biến thể; nếu vượt ngưỡng tĩnh sẽ gọi worker unrpa 2.3.0 (-f <VER> --continue-on-error).
+Có xác nhận hỗ trợ từ unrpa 2.3.0 và rpx, nhưng đặc tả byte chi tiết không nằm trong hồ sơ trích lục hiện tại.
+ZiX-12A / ZiX-12B
+Chữ ký ZiX-12A , ZiX-12B hoặc mã hóa động
+Tầng 1 gọi unrpa 2.3.0; tầng 2 kích hoạt In-Game VFS Fallback: tạo bản sao cách ly, tiêm mô-đun init -999 python dùng renpy.loader.load() xuất toàn bộ .rpyc/.rpy qua pipe an toàn.
+Ghi nhận ZiX-12B dùng lớp làm rối Cython đã từng được cộng đồng unrpa dịch ngược; quy trình VFS fallback là cơ chế dự phòng thiết kế cho trường hợp biến thể mới.
+Trình đọc AST Python tĩnh và Phục hồi Bytecode chéo phiên bản
+Mỗi tệp .rpyc hoặc .rpymc chứa tiêu đề nhận diện RENPY RPC-2 kèm số phiên bản định dạng và các lát dữ liệu pickle nén ZLIB lưu cây AST đã biên dịch. Vì giải mã bằng pickle.loads() chuẩn có thể thực thi mã độc nhúng trong opcode REDUCE/GLOBAL/BUILD, mô-đun py/renloc-core/ast_reader/ triển khai NativeRenpyUnpickler hoạt động như một máy ảo diễn giải opcode tĩnh hoàn toàn không thực thi mã (inert pickle VM). Bộ diễn giải xử lý đồng thời giao thức Python 2 (PROTOCOL <= 2, ánh xạ BINSTRING/SHORT_BINSTRING theo UTF-8 với fallback latin-1) và Python 3 (PROTOCOL 3..5), sử dụng bảng danh sách trắng FakeStrict để chỉ khởi tạo các cấu trúc dữ liệu thụ động thay thế cho renpy.ast.*, renpy.sl2.slast.*, renpy.atl.* cùng bộ lớp bọc theo dõi rollback RevertableList, RevertableDict, RevertableSet, RevertableObject nằm trên cả không gian tên cũ renpy.python lẫn không gian tên mới re[span_7](start_span)[span_7](end_span)npy.revertable.
+Trong bước tái tạo mã nguồn và trích xuất đơn vị dịch thuật chuẩn xác tới Ren'Py 8.4+ / 8.5.3, bộ đọc AST xử lý bốn nhóm đối tượng trọng tâm với sự phân định rạch ròi giữa phần đã kiểm chứng qua mã nguồn Ren'Py và phần cần đối chiếu thêm ở Pha 1. Thứ nhất, đối với Say và TranslateSay, mã nguồn renpy/translation/__init__.py xác nhận khi biên dịch bản dịch, một khối Translate chứa Say và EndTranslate sẽ được gộp thành TranslateSay, đồng thời bộ sinh mã định danh (translation ID) duyệt các nút Say và gọi i.get_code(dialogue_filter=...). Do đó NativeRenpyUnpickler cài đặt tái tạo chính xác chữ ký Say.get_code() và TranslateSay.get_code() (giữ nguyên chuẩn chuẩn hóa khoảng trắng, thuộc tính nhân vật tạm thời và tham số with_/interact) để bảo đảm mã băm khớp tuyệt đối với Ren'Py SDK. Thứ hai, đối với PyCode.__slots__, ArgumentInfo, UserStatement.get_code(), Image.get_code() và cấu trúc RPYCv3 stub, hồ sơ tài liệu hiện có không chứa chi tiết danh sách slot của các bản Ren'Py 8.4+ hay bố cục nhị phân của RPYCv3; vì vậy kiến trúc tách lớp AstSchemaRegistry theo phiên bản Ren'Py để nạp lược đồ __slots__ đối chiếu trực tiếp từ mã nguồn Ren'Py SDK 8.4.x–8.5.3 ngay ở cổng Pha 1, kèm cơ chế fallback tiêm un.rpyc vào bản sao sandbox khi gặp stub RPYCv3 không giải mã tĩnh được.
+Thứ ba, đối với phục hồi mã Python nhúng từ PyCode.bytecode (mã bytecode dùng cho renpy.python.py_exec_bytecode khi PyCode.source bị lược bỏ lúc phát hành game), kiến trúc thiết kế tuyến phục hồi đa tầng gồm: tháo rời bytecode đa phiên bản từ Python 2.7 tới Python 3.12+ bằng xdis, chuyển qua tổ hợp dịch ngược phục hồi luồng điều khiển PyChD + PyLingual + SAILR, và chạy kiểm định tương đương hành vi theo đầu vào (EMI — Equivalence Modulo Inputs kiểu EtherVal) bằng cách biên dịch lại mã Python vừa phục hồi với đúng phiên bản bytecode gốc để so sánh đồ thị luồng điều khiển (CFG) và kết quả mô phỏng. Cần nêu rõ rằng tài liệu rà soát hiện tại chưa có benchmark định lượng chứng minh tỷ lệ phục hồi hoàn chỉnh của chuỗi PyChD + PyLingual + SAILR + EtherVal trên mã Python nhúng của Ren'Py; vì vậy nếu bất kỳ hàm nào không vượt qua kiểm định EMI EtherVal, hệ thống tự động hạ cấp về phân tích trực tiếp trên luồng lệnh đã tháo rời bởi xdis nhằm tránh suy diễn sai logic điều kiện của trò chơi.
+3. Bộ Phân Tích Tĩnh và Đồ Thị Tri Thức Ngữ Cảnh
+Chu trình khởi tạo Ren'Py và quét đệ quy cấu trúc giao diện
+Bộ phân tích tĩnh không quét rời rạc từng tệp .rpy/.rpyc mà mô phỏng chính xác thứ tự nạp và thực thi theo 5 pha của engine Ren'Py để tránh phân giải sai biến nhân vật hoặc độ ưu tiên định nghĩa: pha python early (chạy trước khi biên dịch câu lệnh tùy biến) -> các khối init [offset] sắp xếp theo giá trị nguyên offset tăng dần (nơi khởi tạo Character(...), define, LayeredImage, màn hình screen và các bảng ánh xạ) -> khối default (khởi tạo biến trạng thái ván chơi) -> các nhãn điểm vào như label splashscreen, label main_menu -> và luồng cốt truyện chính bắt đầu từ label start. Trong suốt quá trình dựng cây hợp nhất, trình phân tích duy trì đối tượng định vị kiểu WrapNode để truy vết chính xác tên tệp gốc, số dòng và vị trí lồng khối của từng phát biểu sau khi các tệp được gộp lại.
+Quá trình thu thập chuỗi dịch thuật kết hợp duyệt luồng kịch bản và quét đệ quy tầng giao diện dựa trên hành vi của renpy/translation/scanstrings.py và các khối Screen Language (scre[span_97](start_span)[span_97](end_span)en). Bộ quét đệ quy đi xuyên toàn bộ cây sl2/slast (SLScreen, SLDisplayable, SLIf, SLFor, SLPython, SLUse) để bắt các chuỗi nằm trong text, textbutton, tooltip, thuộc tính alt và biểu thức điều kiện hiển thị, đồng thời quét cấu trúc LayeredImage (các group và attribute) gắn liền với lệnh show/scene để bổ sung nhãn trạng thái cảm xúc/trang phục của nhân vật vào ngữ cảnh câu thoại. Cùng lúc, bộ chuẩn hóa hội thoại quy đổi bốn dạng biểu diễn tương đương của câu thoại về một thực thể ngữ nghĩa thống nhất: câu ast.Say chuẩn có tường minh biến nhân vật (who != None), câu tường thuật ẩn nhân vật (who == None), câu nối tiếp dùng từ khóa extend (kế thừa who và bộ đếm hộp thoại của phát biểu ngay trước đó), và lời gọi trực tiếp renpy.say(...) hay chuỗi đánh dấu qua _(s) và __(s) (phân tách chuỗi dịch tức thì với chuỗi giữ nguyên khóa gốc đến lúc render). Cần ghi chú rõ rằng ngoài xác nhận sự tồn tại của scanstrings và Screen Language, chữ ký thuộc tính chi tiết của WrapNode, sl2/slast và LayeredImage trên nhánh Ren'Py 8.4+ chưa được trích xuất trong hồ sơ hiện có và sẽ được khóa bằng fixture kiểm tra trên Ren'Py SDK 8.5.3 ở Pha 2.
+Phân tích luồng điều khiển ICFG và Đồ thị xưng hô thời gian
+Để giải quyết hiện tượng đứt gãy ngữ cảnh trong tiểu thuyết trực quan (nơi các nhãn dùng lại cho nhiều route hoặc nhân vật thay đổi thái độ và tên gọi theo thời gian cốt truyện), tầng phân tích tĩnh cài đặt dây chuyền 5 thuật toán đồ thị liên hoàn. Lưu ý đây là đặc tả thuật toán thiết kế riêng cho hệ thống; hiện chưa có nghiên cứu thực nghiệm hay benchmark nào trong tài liệu rà soát đo đạc độ chính xác phân giải danh tính hoặc tỷ lệ nổ trạng thái trên tập game Ren'Py lớn, nên thông số giới hạn ngữ cảnh k sẽ được hiệu chỉnh ở Gate 2.
+Dựng ICFG k-CFA (k-Call-String Context-Sensitive Interprocedural CFG): Mô hình hóa mỗi label là một thủ tục, lệnh jump là cạnh chuyển thẳng, còn call label đẩy vị trí gọi vào ngăn xếp gọi giới hạn độ dài k = 2 (kèm xử lý cạnh trả về tại return và biến số đích nếu có jump expression), tạo đồ thị luồng điều khiển nhạy ngữ cảnh cuộc gọi.
+Nén chu trình bằng Tarjan SCC: Tìm toàn bộ thành phần liên thông mạnh (Strongly Connected Components) sinh ra bởi vòng lặp gameplay (vòng lặp ngày/đêm, bản đồ tự do, menu lặp lại) để cô đọng ICFG thành DAG liên vùng, triệt tiêu nguy cơ treo đệ quy và gắn thẻ trạng thái lặp cho từng phân cảnh.
+Dựng cây chế ngự Lengauer-Tarjan (Dominator Tree): Tính tập nút chế ngự bắt buộc từ gốc label start (và các điểm vào phụ như splashscreen) trên DAG đã nén, phân biệt rạch ròi các mốc cốt truyện toàn cục mọi người chơi đều đi qua với các nhánh rẽ tùy chọn theo nhân vật.
+Phân hoạch vết nhạy đường đi (Path-Sensitive Trace Partitioning): Theo dõi tập hợp trạng thái trừu tượng của các biến cờ quan hệ (affection, route_id, player_name, biểu thức if/elif và điều kiện chọn menu) dọc theo các nhánh song song, tách biệt các phiên bản ngữ cảnh khi cùng một label được gọi trong hai quan hệ trái ngược nhau.
+Giải quyết ẩn danh "???" và Đồ thị xưng hô thời gian (Temporal Honorific Graph): Theo dõi các gán giá trị vào biến tên nhân vật động (DynamicCharacter hoặc chuỗi tên gán sau mốc show/define) dọc theo thứ tự topo của DAG và Dominator Tree. Nếu nhân vật mang tên "???" được gán tên thật tại một nút dominator D, đồ thị đánh dấu mọi tiền bối của D giữ trạng thái UNKNOWN_IDENTITY (cấm rò rỉ tên thật vào bản dịch phần đầu game), đồng thời cập nhật cạnh xưng hô có hướng (speaker_id, listener_id, epoch_id) -> {pronoun_self, pronoun_other, formality_tier, evidence_span} phục vụ chọn đại từ tiếng Việt nhất quán qua từng giai đoạn cốt truyện.
+4. Cơ Sở Dữ Liệu Lai SQLite và Lớp Điều Phối Tauri v2
+Mô hình đồng thời SQLite WAL, FTS5 và sqlite-vec
+Kho dữ liệu dự án hợp nhất bảng đơn vị dịch, từ điển thuật ngữ, bộ nhớ dịch (TM), đồ thị tri thức và hàng đợi DAG trong một tệp SQLite duy nhất. Mô hình phân tách quyền truy cập đa tiến trình chặt chẽ giữa Python và Rust để loại bỏ hoàn toàn xung đột khóa ghi:
+Tiến trình & Thư viện
+Chế độ kết nối & PRAGMA chuẩn
+Vai trò & Quy tắc giao dịch đồng bộ
+Python Sidecar (apsw)
+Single-Writer duy nhất; mở kết nối chuẩn WAL: PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=10000; PRAGMA temp_store=MEMORY;
+Mọi thao tác INSERT/UPDATE/DELETE bọc trong BEGIN IMMEDIATE để giành khóa ghi tuần tự ngay từ đầu giao dịch, tránh deadlock nâng cấp từ khóa đọc lên khóa ghi.
+Rust Host (rusqlite trong renloc-db)
+Read-Only Pool (SQLITE_OPEN_READ_ONLY, PRAGMA query_only=ON; PRAGMA busy_timeout=5000;), đăng ký sqlite-vec qua sqlite3_auto_extension (rusqlite::auto_extension)
+Phục vụ bảng ảo hóa React 300k dòng, truy vấn tìm kiếm FTS5 và truy vấn gần đúng sqlite-vec trên snapshot WAL ổn định mà không tranh chấp khóa ghi với apsw.
+Tài liệu chính thức của SQLite khẳng định rõ ràng một giới hạn quan trọng: SQLite Session Extension hoàn toàn không hỗ trợ các bảng ảo (virtual tables)—mọi thay đổi trên bảng ảo không được ghi nhận vào changeset/patchset—đồng thời bỏ qua các hàng chứa NULL ở cột khóa chính. Vì cả FTS5 và vec0 (sqlite-vec) đều là bảng ảo, hệ thống tuyệt đối không dùng Session Extension để đồng bộ chỉ mục. Thay vào đó, dữ liệu chuẩn hóa lưu trên bảng translation_units(id INTEGER PRIMARY KEY, ...) gắn trigger AFTER INSERT / UPDATE / DELETE ghi lại (unit_id, op) vào bảng chuẩn index_outbox. Ngay trong cùng chu kỳ ghi của apsw Single-Writer, tiến trình Python quét index_outbox theo lô để cập nhật đồng bộ bảng units_fts (FTS5) và units_vec (sqlite-vec), bảo đảm nhất quán nguyên tử giữa dữ liệu văn bản và chỉ mục vector.
+Để chống lỗi hỏng tệp bộ nhớ dùng chung -shm (WAL index) khi người dùng đặt game hoặc tệp dự án trên ổ đĩa mạng SMB/NFS hay thư mục đồng bộ đám mây không hỗ trợ khóa mmap đồng nhất, cả renloc-db và renloc-core đều chạy kiểm tra ổ đĩa cục bộ trước khi mở SQLite (kiểm tra GetDriveTypeW == DRIVE_FIXED trên Windows và statfs loại trừ nfs, cifs, smb2, fuse.* trên Linux/macOS; nếu đường dẫn nằm trên ổ đĩa mạng, cơ sở dữ liệu làm việc được đặt trong thư mục cục bộ %LOCALAPPDATA%/$XDG_DATA_HOME). Khi cần sao lưu nóng hoặc thu gọn tệp cơ sở dữ liệu đang chạy WAL, hệ thống dùng VACUUM INTO 'backup_path.sqlite' (hỗ trợ cả tham số URI theo ghi nhận phát hành SQLite) từ kết nối apsw Single-Writer để xuất bản sao toàn vẹn mà không làm gián đoạn các luồng đọc rusqlite. Lưu ý rằng bộ chỉ số trễ thực tế của apsw vs rusqlite dưới tải hỗn hợp là chỉ tiêu thiết kế sẽ được đo kiểm trực tiếp tại Gate 3.
+Lớp điều phối Tauri v2, Chống tiến trình mồ côi và UI 300k dòng
+Lớp host Tauri v2 (apps/desktop/src-tauri) kiểm soát toàn bộ vòng đời thực thi, phân quyền hệ thống tệp và giao diện người dùng theo cấu trúc bốn tầng đồng bộ dưới đây (cần lưu ý rằng trong hồ sơ tài liệu hiện có chỉ có API chung của plugin process trên Tauri v2 được xác nhận, còn cấu hình chi tiết Job Object, death-pipe, giao thức UDS/Named Pipe và hiệu năng bảng 300k dòng là đặc tả cài đặt sẽ kiểm chứng tại Gate 3):
+Thành phần điều phối
+Cơ chế kỹ thuật trên Windows
+Cơ chế kỹ thuật trên Linux / macOS
+Kiểm soát bảo mật & Ràng buộc đồng bộ
+Sidecar & Capabilities ACL
+Đóng gói renloc-bootstrapper-x86_64-pc-windows-msvc.exe qua externalBin.
+Đóng gói renloc-bootstrapper-<target-triple> cho Linux/macOS qua externalBin.
+Giới hạn quyền WebView bằng Capabilities ACL của Tauri v2 (shell:allow-spawn chỉ mở đúng tên binary + danh sách trắng tham số; fs:scope khóa chặt vào thư mục game được chọn qua hộp thoại native).
+Giám hộ tiến trình mồ côi
+Truyền cờ CREATE_NO_WINDOW (0x08000000) ẩn cửa sổ console và gán handle sidecar vào Windows Job Object bật JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+Tách nhóm tiến trình mới bằng setsid() / setpgid(0, 0) và chuyển đầu đọc của một death-pipe ẩn xuống sidecar.
+Khi Tauri tắt chuẩn trên POSIX, gửi SIGTERM tới -pgid, lặp try_wait() tối đa 3.000 ms trước khi gửi SIGKILL. Nếu tiến trình cha chết đột ngột, nhân Windows tự hủy cây Job Object còn sidecar POSIX nhận EOF từ death-pipe để tự thoát sạch cùng worker QE.
+Kênh RPC nội bộ
+Mở Named Pipe cục bộ \\.\pipe\renloc-<pid>-<nonce> với DACL giới hạn đúng SID người dùng hiện tại.
+Mở Unix Domain Socket (UDS) trong thư mục runtime chmod 0700 với quyền tệp 0600.
+Giao tiếp nhị phân bằng MessagePack mang trường session_token ngẫu nhiên 256-bit (CSPRNG) sinh lúc Tauri khởi tạo và truyền qua pipe cấu hình kín; mọi lời gọi từ React đều đi qua lệnh invoke() của Rust.
+UI React bảng ảo hóa 300k dòng
+Giữ cửa sổ hiển thị mỏng bằng @tanstack/react-virtual, giữ ổn định bộ nhớ WebView2.
+Giữ cửa sổ hiển thị mỏng bằng @tanstack/react-virtual trên WebKitGTK / WKWebView.
+Không tải 300.000 bản ghi vào Redux/React state; sử dụng truy vấn keyset pagination (WHERE row_order > ? LIMIT 200) trực tiếp tới rusqlite read-only pool kết hợp tìm kiếm FTS5 bất đồng bộ.
+5. Động Cơ Suy Luận LLM Cục Bộ và Tầng Kiểm Định Chất Lượng
+Bộ phân tích từ vựng nội suy chuẩn Ren'Py và tách ghép LCS
+Chuỗi văn bản Ren'Py trộn lẫn thẻ định dạng trong ngoặc nhọn ({b}, {i}, {color=...}, {w}) và biểu thức nội suy Python trong ngoặc vuông ([player], [mood!ti]). Bộ InterpolationLexer tái hiện trung thực bộ phân tích chuỗi của renpy.substitutions dựa trên tài liệu chính thức của Ren'Py:
+Tầng từ vựng bóc tách nguyên vẹn các chuỗi thoát đặc thù gồm \ (giữ khoảng trắng phụ vì mặc định Ren'Py gộp các khoảng trắng liên tiếp thành một dấu cách), \n, \\, cấu trúc ruby text 【chữ dưới｜chữ trên】 hoặc 【chữ dưới|chữ trên】, cùng cú pháp thoát dấu ngoặc nhọn/vuông trước khi nhận diện biểu thức [field:format!flags]. Theo đặc tả renpy.substitutions, thứ tự viết cờ chuyển đổi không làm thay đổi kết quả (!cl cho kết quả giống hệt !lc), các dấu chấm than dư bị bỏ qua (!l!c tương đương !c!l), và đường ống chuyển đổi luôn thực thi theo đúng thứ tự bảy bước: r/s (repr/str) -> t (dịch giá trị nội suy) -> i (nội suy đệ quy tiếp) -> q (thoát thẻ văn bản để tránh tạo thẻ giả) -> u (viết hoa) -> l (viết thường) -> c (viết hoa ký tự đầu), đồng thời hỗ trợ cờ !f đưa chuỗi qua config.say_menu_text_filter. Trước khi gửi vào LLM, mọi thẻ {...} và biểu thức [...] được thay thế bằng ký hiệu giữ chỗ bất biến dạng <T0>, <V1!ti> có ánh xạ khôi phục tất định 1-1.
+Khi gặp chuỗi thoại chứa nhánh điều kiện nội dòng hoặc các cặp biến thể gần giống nhau trích từ luồng rẽ nhánh kề cận, bộ tiền xử lý áp dụng thuật toán Longest Common Subsequence (LCS) ở cấp độ token từ và thẻ giữ chỗ nhằm ghép phần khung câu hoàn chỉnh đưa vào dịch thống nhất, sau đó đối chiếu ánh xạ chỉ mục để tách lại đúng hai biến thể đầu cuối. Cần lưu ý rằng logic tách ghép LCS này là thuật toán thiết kế riêng cho bộ tiền xử lý và sẽ được kiểm thử bảo toàn cấu trúc bằng fuzz test ở Gate 4.
+ConstraintCompiler lai và Ma trận tương thích 3 Backend LLM
+Để bảo đảm LLM không làm mất, biến dạng hoặc đảo sai thứ tự lồng nhau của thẻ Ren'Py, ConstraintCompiler chuyển đổi chế độ ràng buộc dựa trên tổng số lượng thẻ giữ chỗ N trong câu nguồn (lưu ý cơ chế chuyển ngưỡng N <= 5 và tích hợp XGrammar/llguidance/llama-cpp-python là thiết kế kiến trúc mục tiêu, chưa có tài liệu đối chiếu trực tiếp trong hồ sơ hiện tại):
+Chế độ CFG/EBNF khi N <= 5 thẻ: Sinh văn phạm phi ngữ cảnh cho phép văn bản tiếng Việt tự do chen giữa đúng tập thẻ nguồn (bảo toàn cặp đóng-mở hợp lệ đối với thẻ kiểu {i}...{/i} và vị trí hợp lệ của thẻ đơn {w} hay [var]), rồi biên dịch sang bộ tăng tốc văn phạm của engine (XGrammar, llguidance hoặc GBNF trên llama.cpp).
+Chế độ LogitsProcessor trạng thái khi N > 5 thẻ: Ngăn ngừa bùng nổ số trạng thái DFA/PDA khi câu thoại chứa nhiều thẻ định dạng; bộ xử lý duy trì máy trạng thái ngăn xếp thẻ ở từng bước sinh token, chỉ mở khóa tập token của thẻ đóng/mở kế tiếp đúng theo ngữ pháp và ép logit các token phá vỡ thẻ về -inf (kèm cơ chế phục hồi an toàn nếu toàn bộ hàng logit rơi vào -inf).
+Điểm kiểm toán kỹ thuật tối quan trọng nằm ở sự khác biệt giao diện giữa hai thế hệ API trong vLLM V1 và rủi ro bảo mật RCE nghiêm trọng trên SGLang:
+Backend suy luận
+API Ràng buộc & LogitsProcessor áp dụng
+Hợp đồng cài đặt & Trường hợp biên bắt buộc xử lý
+Cảnh báo tương thích & Rủi ro bảo mật đã xác minh
+vLLM V1 (Model Runner V2)
+Kế thừa LogitsProcessor từ vllm.v1.worker.gpu.sample.logits_processor.interface.
+Module bắt buộc import-light: đưa torch, triton vào khối TYPE_CHECKING và dùng type annotation trì hoãn vì tiến trình frontend nạp module để chạy validate_params(cls, sampling_params). Cài đặt __init__(vllm_config, req_states), add_request(req_idx, sampling_params) -> bool (khởi tạo lại sạch toàn bộ slot vì slot được tái chế từ free-list), apply_staged_writes(), và apply(logits, ctx) dùng ctx.expanded_idx_mapping để ánh xạ đúng hàng logits (do speculative decoding cấp nhiều hàng cho một request).
+Thinking-budget forcing của vLLM chạy sau apply() và ghi đè kết quả nếu hết ngân sách suy nghĩ. Hỗ trợ nạp qua FQCN, entry point [project.entry-points."vllm.logits_processors"], hoặc truyền class offline.
+vLLM V1 (Giao diện BatchUpdate / ổn định v0.10–v0.32)
+Kế thừa LogitsProcessor từ vllm.v1.sample.logits_processor.interface.
+Cài đặt __init__(vllm_config, device, is_pin_memory), is_argmax_invariant() -> bool, validate_params(sampling_params), update_state(batch_update) xử lý theo đúng thứ tự removed -> added -> moved (bao gồm MoveDirectionality.SWAP), và apply(logits) trên tensor [num_requests, vocab_size]. Học theo MinTokensLogitsProcessor của vLLM để xử lý hàng spec-decode và khôi phục logit khi toàn bộ hàng về -inf.
+Hệ thống cài VllmCompatAdapter kiểm tra module hiện hữu khi khởi động để chọn đúng lớp giao diện V1 BatchUpdate hoặc V2 LogitsContext.
+SGLang
+Kế thừa sglang.srt.sampling.custom_logit_processor.CustomLogitProcessor, truyền qua .to_str() và custom_params trong sampling_params tới /generate khi bật --enable-custom-logit-processor.
+Đóng gói máy trạng thái thẻ thành CustomLogitProcessor (truyền ràng buộc từng câu qua custom_params), kết hợp grammar backend nếu N <= 5. Các tính năng tối ưu như SGLANG_EXPERIMENTAL_HIRADIX_CACHE và chế độ full-shape logits chưa có tài liệu kiểm chứng chính thức trong hồ sơ hiện tại nên chỉ bật thử nghiệm có cờ kiểm tra tính năng ở Pha 4.
+LỖ HỔNG NGHIÊM TRỌNG (CVE-2026-7304 / CERT/CC VU#777338): Theo phân tích bảo mật của SecureLayer7, CustomLogitProcessor.from_str() gọi thẳng dill.loads() trên byte hex từ HTTP POST mà không kiểm tra HMAC hay whitelist lớp, gây RCE trước xác thực trên SGLang v0.5.11–v0.5.12+ (trạng thái nhà cung cấp ghi nhận Unknown lúc công bố 18/05/2026). Bắt buộc khóa SGLang trên 127.0.0.1 sau proxy xác thực token nội bộ và áp dụng bản vá đăng ký processor phía server hoặc ký HMAC 32-byte sinh lúc khởi động thay cho dill.loads() trần.
+llama-cpp-python
+Grammar GBNF kết hợp callback LogitsProcessor cục bộ.
+Dùng GBNF cho N <= 5 thẻ và hàm Python/Cython mặt nạ logit cho N > 5 dùng chung lõi máy trạng thái ConstraintCompiler.
+Đóng vai trò backend phổ thông cho máy GPU VRAM nhỏ hoặc chạy CPU; đặc tả phiên bản chi tiết cần khóa ở Pha 0 vì chưa có tài liệu tham chiếu trong hồ sơ rà soát.
+Lập lịch DAG Idempotent, Giám sát VRAM và Định tuyến chất lượng 3 bậc
+Bộ điều phối suy luận trên Python sidecar vận hành như một máy trạng thái DAG Idempotent bền vững trên SQLite: mỗi đơn vị dịch nhận khóa định danh dag_task_key = sha256(source_[span_13](start_span)[span_13](end_span)hash | icfg_context_id | glossary_version | model_id). Mọi chuyển trạng thái (PENDING -> LEASED -> DRAFTED -> REFINED -> QE_SCORED -> COMMITTED) ghi qua giao dịch BEGIN IMMEDIATE của apsw, bảo đảm ứng dụng có thể tạm dừng hoặc khôi phục sau sự cố mất điện mà không dịch trùng lặp. Trước khi gửi mỗi lô suy luận, mô-đun giám sát VRAM KV-cache đọc dung lượng trống qua API quản lý GPU và tính toán hạn mức cấp phát theo cơ chế bảo toàn kiểu _room_for_copy: luôn chừa khoảng đệm trống tương ứng dung lượng hoán đổi/sao chép khối KV-cache và kích hoạt suy luận nhằm tự động co kích thước lô (batch_size) trước khi xảy ra lỗi tràn bộ nhớ OOM.
+Định tuyến mô hình chia làm 3 bậc theo độ phức tạp ngữ nghĩa trích xuất từ Bộ phân tích tĩnh:
+Bậc 1 — Lọc tất định và TM/Glossary: Xử lý tức thì câu chỉ gồm thẻ/số liệu, tên riêng đã cố định trong bảng thuật ngữ, hoặc khớp 100% trong bộ nhớ dịch cùng ngữ cảnh đường đi ICFG.
+Bậc 2 — Mô hình cục bộ nhẹ/trung bình một lượt: Áp dụng cho lời thoại đơn giản, ít thay đổi ngôi xưng và ít nội suy phức tạp, chạy cưỡng bức ràng buộc ConstraintCompiler.
+Bậc 3 — Mô hình lớn kèm Chu trình TEaR + MBR + Worker QE cô lập: Dành cho cảnh hội thoại có chuyển đổi đại từ theo thời gian, đa nhân vật hoặc điểm nút cao trào. Hệ thống sinh K ứng viên bản dịch (K = 4..8), chạy bước tinh chỉnh TEaR (Translate -> Estimate -> Refine) nếu phát hiện sai sót thẻ/sắc thái, chọn ứng viên tối ưu theo Minimum Bayes Risk (MBR), rồi đẩy cặp nguồn–đích qua JSON-RPC stdio sang tiến trình cô lập .venvs/qe chạy unbabel-comet==2.2.7 giữ model thường trú trên RAM/VRAM. Hồ sơ thực nghiệm xác nhận unbabel-comet hỗ trợ XCOMET-XL (~14 GB) và XCOMET-XXL (~42 GB, cả hai đều là mô hình gated cần cấp quyền HuggingFace) bên cạnh wmt22-comet-da (mô hình có bản tham chiếu, chạy lô 16 trong nghiên cứu IWSLT 2026). Các cấu hình mục tiêu như COMETKiwi FP16, GEMBA-MQM v2, quy trình TEaR, MBR và tham số _room_for_copy chưa có benchmark đối chiếu trên cặp Anh–Việt/Nhật–Việt trong tập tài liệu hiện tại, nên hệ thống thiết kế các bộ đánh giá này dạng plugin cấu hình động và tiến hành chuẩn hóa ngưỡng điểm lọc ở Gate 4.
+6. Định Hình Chữ Native, Cập Nhật Gia Tăng, Runtime Hook và Lộ Trình Kiểm Chứng
+Tầng định hình chữ native và kiểm tra font tiếng Việt
+Ren'Py cung cấp bộ định hình văn bản harfbuzz kích hoạt qua thuộc tính style shaper "harfbuzz" (bắt buộc cho variable font), hỗ trợ xử lý hướng văn bản RTL/LTR dựa trên HarfBuzz kết hợp FriBidi, đồng thời cung cấp FontGroup (phương thức .add()) để ghép ký tự từ nhiều tệp font khác nhau. Nhằm giải quyết triệt để lỗi mất chữ hoặc lệch dấu thanh tiếng Việt do font gốc của game chỉ hỗ trợ tập ASCII/Latin cơ bản hoặc Kanji, crate crates/renloc-shaper (dùng harfruzz / freetype / liên kết FriBidi ở tầng native và uharfbuzz phía Python khi cần tinh chỉnh) chạy quy trình kiểm toán 3 bước ngay khi nạp dự án:
+Thu thập toàn bộ đường dẫn font khai báo trong gui.rpy, screens.rpy và các khối FontGroup (bao gồm font nằm trong .rpa giải nén qua renloc-rpa).
+Quét bảng cmap của từng tệp font đối chiếu với đủ 134 ký tự tiếng Việt chuẩn NFC (chữ hoa, chữ thường, đ/Đ và 12 nguyên âm kèm 5 dấu thanh). Với mọi font thiếu glyph (glyph_id == 0), hệ thống cảnh báo người dùng và tự động sinh đoạn cấu hình FontGroup ghép dải mã Unicode tiếng Việt vào một font dự phòng đồng điệu nét chữ.
+Chạy định hình thử toàn bộ câu dịch hoàn chỉnh để tính hộp giới hạn điểm ảnh thực tế, đối chiếu với kích thước vùng hiển thị hộp thoại và nút bấm trong gui.rpy để cảnh báo tràn khung chữ trước khi đóng gói.
+Cập nhật gia tăng 4 tầng và Tổng hợp gói với Runtime Hook an toàn
+Khi tựa game phát hành bản cập nhật mới, hệ thống bảo toàn tối đa bản dịch cũ nhờ bộ so khớp Cập nhật gia tăng 4 tầng giữa ảnh chụp AST phiên bản cũ và phiên bản mới: Tầng 1 đối chiếu trực tiếp mã định danh dịch (identifier) tính từ Say.get_code() và khóa chuỗi UI; Tầng 2 so khớp cấu trúc nút AST và nhãn label bao quanh khi thay đổi nhỏ thuộc tính hiển thị; Tầng 3 thực hiện Fuzzy AST Matching kết hợp khoảng cách chỉnh sửa chuỗi và độ tương đồng nhúng vector từ sqlite-vec để đưa câu bị sửa ít từ vào hàng đợi hiệu đính nhanh; Tầng 4 đẩy các câu mới hoàn toàn vào DAG dịch thuật cùng ngữ cảnh đồ thị tri thức đã cập nhật.
+Trình tổng hợp xuất kết quả thành gói chuẩn game/tl/vietnamese/ chứa các khối translate vietnamese <id>: và translate vietnamese strings:, luôn xuất chuẩn 4 khoảng trắng ở mọi cấp thụt lề và cấm tuyệt đối ký tự Tab (do Python/Ren'Py báo lỗi cú pháp khi trộn khoảng trắng và Tab). Khi trò chơi cần xử lý động biến số xưng hô hoặc tên gọi theo thời điểm chạy, trình tổng hợp đính kèm tệp renloc_runtime_hook.rpy tuân thủ nghiêm ngặt ba chốt an toàn cho hệ thống lưu/tua ngược của Ren'Py: mọi từ điển trạng thái động có thay đổi trong ván chơi phải bọc bằng RevertableDict/RevertableList của renpy.python/renpy.revertable thay vì dict/list thuần; hàm xử lý gắn vào config.say_menu_text_filter phải bảo đảm tính thuần khiết (idempotency) để không biến đổi chồng chéo hoặc đột biến biến toàn cục khi người chơi Rollback lại câu thoại cũ; và tích hợp Cầu dao ngắt mạch chống bão 90 khung hình (90-frame storm circuit breaker) theo dõi số lỗi hoặc chu kỳ lặp đánh giá văn bản liên tiếp—nếu chạm ngưỡng 90 khung hình lỗi liên hoàn (chẳng hạn do biểu thức !i đệ quy vô tận), cầu dao tự động ngắt hook lọc văn bản trong phiên chơi hiện tại và trả về văn bản gốc để game không treo hoặc văng ngoại lệ.
+Bộ kiểm thử sai lệch, Chạy Headless và Save/Rollback EMI
+Trước khi đóng gói bản dịch phát hành, đường ống kiểm chứng tự động vận hành đồng bộ ba bài kiểm thử đầu cuối dựa trên các thực hành và giới hạn đã được xác minh trong cộng đồng Ren'Py:
+Loại kiểm thử
+Phương thức thực thi & Môi trường
+Giới hạn đã ghi nhận & Biện pháp xử lý
+Differential Testing với Ren'Py SDK
+Chạy song song renloc-core với lệnh biên dịch/xuất bản dịch (translate / lint) của Ren'Py SDK bản tham chiếu.
+Đối chiếu trùng khớp 100% tập identifier sinh từ Say.get_code() và kiểm tra không lỗi cú pháp .rpy trên trình biên dịch của chính SDK.
+Headless Testing (Linux vs macOS/Screenshot)
+Trên Linux CI thiết lập SDL_VIDEODRIVER=dummy và SDL_AUDIODRIVER=dummy để chạy compile và lint không màn hình (đã dùng ổn định tới Ren'Py 8.5.3).
+Công cụ cộng đồng translator3000-source cảnh báo trình launcher Ren'Py trả tiến trình cha về trước khi tiến trình con biên dịch xong, nên script test phải chờ toàn cây tiến trình con. Đồng thời, thảo luận trên LemmaSoft chỉ ra dummy làm hỏng các bài kiểm thử cần dựng hình/đồ họa; vì vậy kiểm thử chụp màn hình tràn chữ và chạy trên macOS chuyển sang chế độ cửa sổ ẩn hoặc offscreen (cần xác thực thực tế hành vi offscreen của SDL/macOS với Ren'Py ở Pha 5 vì chưa có dữ liệu xác minh trong hồ sơ hiện tại).
+Save / Rollback EMI
+Kịch bản kiểm thử tự động mô phỏng bấm tiếp thoại, lưu (renpy.save), tải lại (renpy.load) và tua ngược (renpy.rollback) qua các nhánh chứa !ti và thẻ {tag}.
+Xác minh ảnh chụp toàn bộ biến trạng thái game và chuỗi văn bản xuất ra giống hệt trước/sau khi gắn gói dịch và Runtime Hook, chứng minh không rò rỉ biến ngoài Revertable* và kích hoạt đúng cầu dao 90 khung hình khi cố tình bơm lỗi đệ quy.
+Lộ trình cài đặt theo từng pha với cổng kiểm chứng tích hợp
+Pha
+Phạm vi mô-đun & Đầu việc mã nguồn
+Cổng kiểm chứng tích hợp
+Tiêu chuẩn nghiệm thu bắt buộc
+Pha 0: Khung Monorepo & Cô lập Virtualenv
+Thiết lập Cargo workspace, renloc-pyext (maturin ABI3), Tauri v2 shell, cấu hình uv + python-build-standalone tạo .venvs/core và .venvs/qe, thu thập tập fixture Ren'Py SDK 7.x–8.5.3.
+Gate 0: Build chéo 3 OS và chạy thử nghiệm bắt tay JSON-RPC giữa numpy 2.x (core) và unbabel-comet==2.2.7 / numpy 1.26.4 (qe).
+Không xung đột phụ thuộc; worker QE giữ mô hình trên bộ nhớ và phản hồi chấm điểm qua stdio ổn định.
+Pha 1: Lõi RPA & Trình đọc AST Python
+Hoàn thiện crates/renloc-rpa (RPA-1..4, ALT, custom 8-byte header, VFS fallback ZiX), NativeRenpyUnpickler, trích xuất lược đồ __slots__/get_code() từ SDK 8.4+, và cầu nối xdis + decompiler + EMI.
+Gate 1: Differential test so khớp AST/ID với Ren'Py SDK; kiểm thử từ chối pickle độc hại.
+Sai lệch identifier bằng 0 trên tập fixture chuẩn; từ chối 100% opcode thực thi mã không an toàn; giải nén tệp lớn không tăng đột biến RAM.
+Pha 2: Phân tích Tĩnh & Đồ thị Tri thức
+Dựng vòng đời python early -> start, trình quét WrapNode/sl2.slast/LayeredImage, chuẩn hóa 4 dạng Say/_(s), và triển khai ICFG k-CFA + Tarjan SCC + Lengauer-Tarjan + đồ thị xưng hô thời gian.
+Gate 2: Chạy phân tích trên kịch bản mẫu có vòng lặp ngày-đêm, menu lặp, câu thoại extend, và nhân vật "???" đổi tên giữa chừng.
+Không kẹt vòng lặp vô hạn; 100% tên nhân vật thật sau mốc tiết lộ không rò ngược về tiền bối dominator; bao phủ đầy đủ chuỗi UI từ scanstrings.
+Pha 3: SQLite Lai & Điều phối Tauri v2
+Triển khai apsw Single-Writer + rusqlite Read-Only + sqlite-vec auto-extension, trigger index_outbox (không Session Extension), kiểm tra ổ đĩa cục bộ, VACUUM INTO, Job Object / death-pipe, UDS/Named Pipe MessagePack và bảng React 300k dòng.
+Gate 3: Kiểm thử đọc-ghi đồng thời tải cao, giả lập crash/kill tiến trình Tauri, và mount thư mục mạng giả lập.
+Không lỗi khóa SQLITE_BUSY hoặc hỏng -shm; không sót tiến trình mồ hôi Python/QE sau khi ép đóng Tauri; cuộn bảng 300k dòng ổn định.
+Pha 4: Động cơ LLM & Kiểm định Chất lượng
+Cài đặt InterpolationLexer chuẩn r/s->t->i->q->u->l->c, bộ tách ghép LCS, ConstraintCompiler lai (<= 5 vs > 5 thẻ), adapter vLLM V1/V2 + SGLang vá CVE-2026-7304 + llama-cpp-python, DAG scheduler, _room_for_copy, và TEaR/MBR/QE.
+Gate 4: Fuzz test 10.000 câu thoại lồng thẻ/biến qua các backend; kiểm thử thâm nhập từ chối payload dill không chữ ký trên kênh nội bộ SGLang.
+Bảo toàn 100% cấu trúc thẻ [...] và {...}; từ chối mọi yêu cầu không hợp lệ vào SGLang; phục hồi đúng điểm dừng DAG sau ngắt kết nối đột ngột.
+Pha 5: Shaper, Synthesizer, Hook & End-to-End
+Hoàn thiện crates/renloc-shaper + kiểm toán cmap tiếng Việt + FontGroup, cập nhật gia tăng 4 tầng, trình kết xuất game/tl/vietnamese/, renloc_runtime_hook.rpy, và bộ kiểm chứng Headless + Screenshot + Save/Rollback EMI.
+Gate 5: Chạy Headless SDK lint/compile (SDL_VIDEODRIVER=dummy), test chụp ảnh tràn chữ ngoài dummy, và bài kiểm thử Save/Rollback EMI toàn cục.
+Game chạy xuyên suốt chu kỳ lưu/tải/tua ngược không vỡ biến Revertable*; không thiếu dấu tiếng Việt; cầu dao 90 khung hình kích hoạt chính xác khi bơm lỗi đệ quy.
+Nguồn trích dẫn
+1. RPA Extractor Software: Free Online Ren'Py Extractor, https://rpaextractorsoftware.com/ 2. Lesson 4. Evaluating machine translation with chrF and COMET, https://colab.research.google.com/github/xmarva/transformers-from-scratch/blob/main/notebooks/colab/04_evaluation.ipynb 3. lm-polygraph · PyPI, https://pypi.org/project/lm-polygraph/ 4. xCOMET MCP Server - shuji-bonji - GitHub, https://github.com/shuji-bonji/xcomet-mcp-server 5. What Llama changed in the Transformer: RoPE, RMSNorm, SwiGLU, https://xmarva.github.io/blog/2026/transformers-from-scratch-05-llama/ 6. [Feature] Ren'Py reverse engineering: RPA archives, RPYC ... - GitHub, https://github.com/morluto/rea/issues/3648 7. Midco — MCP Sunucusu (Rust) | MCP Se... · LobeHub, https://lobehub.com/tr/mcp/midco-team-midco-mcp 8. The Session Extension - SQLite, https://sqlite.org/sessionintro.html 9. CVE-2026-7304: SGLang - Unauthenticated RCE via dill.loads, https://blog.securelayer7.net/cve-2026-7304-sglang-unauthenticated-rce/ 10. renpy/renpy/translation/__init__.py at master - GitHub, https://github.com/renpy/renpy/blob/master/renpy/translation/__init__.py 11. vllm.v1.worker.gpu.sample.logits_processor.interface, https://docs.vllm.ai/en/latest/api/vllm/v1/worker/gpu/sample/logits_processor/interface/ 12. Text — Ren'Py Documentation, https://www.renpy.org/doc/html/text.html 13. vllm.v1.sample.logits_processor.interface, https://docs.vllm.ai/en/latest/api/vllm/v1/sample/logits_processor/interface/ 14. build.py - renpy-translator/translator3000-source - GitHub, https://github.com/renpy-translator/translator3000-source/blob/main/build.py 15. VoiceStudio/CHANGELOG.md at main - GitHub, https://github.com/debpalash/VoiceStudio/blob/main/CHANGELOG.md 16. Effigy/docs/ARCHITECTURE.md at main - SifuInTheShell - GitHub, https://github.com/SifuInTheShell/Effigy/blob/main/docs/ARCHITECTURE.md 17. Environment | grpo-translation-consistency ... - SwanLab, https://swanlab.cn/@ComistryMo/grpo-translation-consistency/v0/runs/22gn1t6q5zx4w2qwc55wu/environment/requirements 18. Activity · Unbabel/COMET - GitHub, https://github.com/Unbabel/COMET/activity 19. Data Management - renpy/persistent.py - DeepWiki, https://deepwiki.com/renpy/renpy/6-data-management 20. Lattyware/unrpa: Extract files from the RPA archive format. - GitHub, https://github.com/lattyware/unrpa 21. unrpa - PyPI, https://pypi.org/project/unrpa/ 22. Releases · Lattyware/unrpa - GitHub, https://github.com/Lattyware/unrpa/releases 23. GitHub - celestiamia/rpx: A modern, feature-rich library and CLI tool, https://github.com/celestiamia/rpx 24. How to encrypt / obfuscate your Ren'Py archive RPA files to prevent, https://lemmasoft.renai.us/forums/viewtopic.php?t=59725 25. Ren'Py RPA - Reverse Engineering Wiki - Miraheze, https://rewiki.miraheze.org/wiki/Ren%E2%80%99Py_RPA 26. thevn-renpy/renpy/ast.py at master · tmapua/thevn-renpy - GitHub, https://github.com/tmapua/thevn-renpy/blob/master/renpy/ast.py 27. Issue with input fields and copy/paste in Renpy 8 #3791 - GitHub, https://github.com/renpy/renpy/issues/3791 28. Splashscreen and Presplash — Ren'Py Documentation, https://www.renpy.org/doc/html/splashscreen_presplash.html 29. renpy/tutorial/game/tutorial_screen_displayables.rpy at master, https://github.com/renpy/renpy/blob/master/tutorial/game/tutorial_screen_displayables.rpy 30. Release History Of SQLite, https://www.sqlite.org/draft/changes.html 31. Process - Tauri, https://v2.tauri.app/plugin/process/ 32. Translation — Ren'Py Documentation, https://www.renpy.org/doc/html/translation.html 33. Selected-Layer Codec Compression for Compact Speech, https://aclanthology.org/2026.iwslt-1.4.pdf 34. renpy/renpy/text/text.py at master - GitHub, https://github.com/renpy/renpy/blob/master/renpy/text/text.py 35. textshaping: Bindings to the 'HarfBuzz' and 'Fribidi' Libraries for ... - r-lib, https://r-lib.r-universe.dev/textshaping 36. Some notes about RenPy - Weight Gaming, https://forum.weightgaming.com/t/some-notes-about-renpy/20786

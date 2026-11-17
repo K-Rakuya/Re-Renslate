@@ -58,8 +58,8 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
     let trimmed = line_str.trim_end_matches(['\r', '\n']);
 
     // 2. RPA-2.0 ("RPA-2.0 0123456789abcdef [extra]")
-    if trimmed.starts_with("RPA-2.0 ") {
-        let parts: Vec<&str> = trimmed["RPA-2.0 ".len()..].split_whitespace().collect();
+    if let Some(rest) = trimmed.strip_prefix("RPA-2.0 ") {
+        let parts: Vec<&str> = rest.split_whitespace().collect();
         if parts.is_empty() {
             return Err(HeaderError::HexParseError("Missing index offset in RPA-2.0 header".to_string()));
         }
@@ -74,8 +74,8 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
     }
 
     // 3. RPA-3.0 ("RPA-3.0 0123456789abcdef 01234567")
-    if trimmed.starts_with("RPA-3.0 ") {
-        let parts: Vec<&str> = trimmed["RPA-3.0 ".len()..].split_whitespace().collect();
+    if let Some(rest) = trimmed.strip_prefix("RPA-3.0 ") {
+        let parts: Vec<&str> = rest.split_whitespace().collect();
         if parts.len() < 2 {
             return Err(HeaderError::HexParseError("Missing offset or key in RPA-3.0 header".to_string()));
         }
@@ -100,9 +100,9 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
     }
 
     // 4. RPA-3.2
-    if trimmed.starts_with("RPA-3.2 ") {
-        let parts: Vec<&str> = trimmed["RPA-3.2 ".len()..].split_whitespace().collect();
-        let index_offset = parts.get(0).and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(0);
+    if let Some(rest) = trimmed.strip_prefix("RPA-3.2 ") {
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        let index_offset = parts.first().and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(0);
         let key = parts.get(1).and_then(|s| u32::from_str_radix(s, 16).ok());
         return Ok(RpaHeaderInfo {
             version: RpaVersion::Rpa32,
@@ -113,9 +113,9 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
     }
 
     // 5. RPA-4.0
-    if trimmed.starts_with("RPA-4.0 ") {
-        let parts: Vec<&str> = trimmed["RPA-4.0 ".len()..].split_whitespace().collect();
-        let index_offset = parts.get(0).and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(0);
+    if let Some(rest) = trimmed.strip_prefix("RPA-4.0 ") {
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        let index_offset = parts.first().and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(0);
         let key = parts.get(1).and_then(|s| u32::from_str_radix(s, 16).ok());
         return Ok(RpaHeaderInfo {
             version: RpaVersion::Rpa40,
@@ -126,9 +126,9 @@ pub fn parse_rpa_header(bytes: &[u8]) -> Result<RpaHeaderInfo, HeaderError> {
     }
 
     // 6. ALT-1.0
-    if trimmed.starts_with("ALT-1.0 ") {
-        let parts: Vec<&str> = trimmed["ALT-1.0 ".len()..].split_whitespace().collect();
-        let index_offset = parts.get(0).and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(0);
+    if let Some(rest) = trimmed.strip_prefix("ALT-1.0 ") {
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        let index_offset = parts.first().and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(0);
         let key = parts.get(1).and_then(|s| u32::from_str_radix(s, 16).ok());
         return Ok(RpaHeaderInfo {
             version: RpaVersion::Alt10,
