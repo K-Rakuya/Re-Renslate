@@ -28,7 +28,12 @@ pub struct ReadOnlyPool {
 
 impl ReadOnlyPool {
     pub fn new<P: AsRef<Path>>(db_path: P, max_connections: u32) -> Result<Self, DbError> {
-        let path = db_path.as_ref().to_path_buf();
+        let safe_path = crate::drive_guard::get_safe_local_db_path(db_path.as_ref());
+        let path = if safe_path.exists() {
+            safe_path
+        } else {
+            db_path.as_ref().to_path_buf()
+        };
         if !path.exists() {
             return Err(DbError::NotFound(path.display().to_string()));
         }
@@ -40,18 +45,21 @@ impl ReadOnlyPool {
                 conn.execute_batch(
                     "PRAGMA query_only = ON;
                      PRAGMA busy_timeout = 5000;
-                     PRAGMA mmap_size = 268435456;" // 256MB mmap
+                     PRAGMA mmap_size = 268435456;", // 256MB mmap
                 )
             });
 
-        let pool = Pool::builder()
-            .max_size(max_connections)
-            .build(manager)?;
+        let pool = Pool::builder().max_size(max_connections).build(manager)?;
 
-        Ok(Self { pool, db_path: path })
+        Ok(Self {
+            pool,
+            db_path: path,
+        })
     }
 
-    pub fn get_connection(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>, DbError> {
+    pub fn get_connection(
+        &self,
+    ) -> Result<r2d2::PooledConnection<SqliteConnectionManager>, DbError> {
         Ok(self.pool.get()?)
     }
 

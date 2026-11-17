@@ -1,9 +1,11 @@
 //! lib.rs
 //! renloc-db: Read-only SQLite WAL connection pooling, FTS5 search, and keyset pagination.
 
+pub mod drive_guard;
 pub mod fts_vec;
 pub mod readonly_pool;
 
+pub use drive_guard::{check_path_drive, get_safe_local_db_path, DriveType};
 pub use fts_vec::{QueryEngine, TranslationUnitRow, DEFAULT_PAGE_LIMIT};
 pub use readonly_pool::{DbError, ReadOnlyPool};
 
@@ -60,7 +62,8 @@ mod tests {
         assert_eq!(page[0].unit_identifier, "say_01");
         assert_eq!(page[1].unit_identifier, "say_02");
 
-        let page2 = QueryEngine::fetch_page_keyset(&conn, page.last().unwrap().row_order, 2).unwrap();
+        let page2 =
+            QueryEngine::fetch_page_keyset(&conn, page.last().unwrap().row_order, 2).unwrap();
         assert_eq!(page2.len(), 1);
         assert_eq!(page2[0].unit_identifier, "say_03");
 
@@ -82,8 +85,9 @@ mod tests {
                 speaker TEXT,
                 status TEXT NOT NULL,
                 row_order INTEGER NOT NULL
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
 
         // Insert 2500 rows in a transaction
         let mut appender = conn.prepare(
@@ -92,12 +96,14 @@ mod tests {
         ).unwrap();
         conn.execute("BEGIN TRANSACTION", []).unwrap();
         for i in 1..=2500 {
-            appender.execute(rusqlite::params![
-                i,
-                format!("id_{:05}", i),
-                format!("Source dialogue {}", i),
-                format!("Target dialogue {}", i),
-            ]).unwrap();
+            appender
+                .execute(rusqlite::params![
+                    i,
+                    format!("id_{:05}", i),
+                    format!("Source dialogue {}", i),
+                    format!("Target dialogue {}", i),
+                ])
+                .unwrap();
         }
         conn.execute("COMMIT", []).unwrap();
         drop(appender);
@@ -146,10 +152,14 @@ mod tests {
         setup_test_db(tmp.path());
 
         let pool = ReadOnlyPool::new(tmp.path(), 4).unwrap();
-        let page = QueryEngine::fetch_page_keyset_async(pool.clone(), 0, 2).await.unwrap();
+        let page = QueryEngine::fetch_page_keyset_async(pool.clone(), 0, 2)
+            .await
+            .unwrap();
         assert_eq!(page.len(), 2);
 
-        let search = QueryEngine::search_fts_async(pool.clone(), "Hello".into(), 10).await.unwrap();
+        let search = QueryEngine::search_fts_async(pool.clone(), "Hello".into(), 10)
+            .await
+            .unwrap();
         assert_eq!(search.len(), 1);
         assert_eq!(search[0].unit_identifier, "say_01");
 
@@ -187,15 +197,19 @@ mod tests {
         let writer_path = path.clone();
         let writer_handle = thread::spawn(move || {
             let mut writer_conn = Connection::open(&writer_path).unwrap();
-            writer_conn.execute_batch(
-                "PRAGMA journal_mode = WAL;
-                 PRAGMA busy_timeout = 10000;"
-            ).unwrap();
+            writer_conn
+                .execute_batch(
+                    "PRAGMA journal_mode = WAL;
+                 PRAGMA busy_timeout = 10000;",
+                )
+                .unwrap();
 
             let mut row_id = 100;
             while writer_running.load(Ordering::Relaxed) {
                 row_id += 1;
-                let tx = writer_conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+                let tx = writer_conn
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .unwrap();
                 tx.execute(
                     "INSERT INTO translation_units (id, unit_identifier, source_text, target_text, speaker, status, row_order)
                      VALUES (?1, ?2, 'test text', 'ban dich', 'eileen', 'COMMITTED', ?1)",
@@ -230,7 +244,10 @@ mod tests {
         writer_handle.join().unwrap();
         for h in reader_handles {
             let count = h.join().unwrap();
-            assert!(count > 0, "Reader thread should have performed multiple reads without error");
+            assert!(
+                count > 0,
+                "Reader thread should have performed multiple reads without error"
+            );
         }
     }
 }

@@ -2,9 +2,9 @@
 //! High-performance Keyset Pagination and Full-Text Search (FTS5) queries.
 //! Handles 300,000+ translation units without memory exhaustion in the GUI.
 
+use crate::readonly_pool::{DbError, ReadOnlyPool};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use crate::readonly_pool::{DbError, ReadOnlyPool};
 
 pub const DEFAULT_PAGE_LIMIT: usize = 200;
 
@@ -41,13 +41,17 @@ impl QueryEngine {
         cursor_row_order: i64,
         limit: usize,
     ) -> Result<Vec<TranslationUnitRow>, DbError> {
-        let effective_limit = if limit == 0 { DEFAULT_PAGE_LIMIT } else { limit };
+        let effective_limit = if limit == 0 {
+            DEFAULT_PAGE_LIMIT
+        } else {
+            limit
+        };
         let mut stmt = conn.prepare(
             "SELECT id, unit_identifier, source_text, target_text, speaker, status, row_order
              FROM translation_units
              WHERE row_order > ?1
              ORDER BY row_order ASC
-             LIMIT ?2"
+             LIMIT ?2",
         )?;
 
         let rows = stmt.query_map(params![cursor_row_order, effective_limit as i64], map_row)?;
@@ -65,13 +69,17 @@ impl QueryEngine {
         cursor_row_order: i64,
         limit: usize,
     ) -> Result<Vec<TranslationUnitRow>, DbError> {
-        let effective_limit = if limit == 0 { DEFAULT_PAGE_LIMIT } else { limit };
+        let effective_limit = if limit == 0 {
+            DEFAULT_PAGE_LIMIT
+        } else {
+            limit
+        };
         let mut stmt = conn.prepare(
             "SELECT id, unit_identifier, source_text, target_text, speaker, status, row_order
              FROM translation_units
              WHERE row_order < ?1
              ORDER BY row_order DESC
-             LIMIT ?2"
+             LIMIT ?2",
         )?;
 
         let rows = stmt.query_map(params![cursor_row_order, effective_limit as i64], map_row)?;
@@ -95,14 +103,24 @@ impl QueryEngine {
     pub fn sanitize_fts_query(query: &str) -> String {
         let cleaned: String = query
             .chars()
-            .map(|c| if c.is_alphanumeric() || c.is_whitespace() || c == '_' { c } else { ' ' })
+            .map(|c| {
+                if c.is_alphanumeric() || c.is_whitespace() || c == '_' {
+                    c
+                } else {
+                    ' '
+                }
+            })
             .collect();
         let tokens: Vec<&str> = cleaned.split_whitespace().collect();
         if tokens.is_empty() {
             return String::new();
         }
         // Quote each token with wildcard matching for prefix search
-        tokens.iter().map(|t| format!("\"{}\"*", t)).collect::<Vec<_>>().join(" AND ")
+        tokens
+            .iter()
+            .map(|t| format!("\"{}\"*", t))
+            .collect::<Vec<_>>()
+            .join(" AND ")
     }
 
     /// Full-Text Search using FTS5 virtual table.
@@ -116,7 +134,11 @@ impl QueryEngine {
             return Ok(Vec::new());
         }
 
-        let effective_limit = if limit == 0 { DEFAULT_PAGE_LIMIT } else { limit };
+        let effective_limit = if limit == 0 {
+            DEFAULT_PAGE_LIMIT
+        } else {
+            limit
+        };
         let sanitized = Self::sanitize_fts_query(trimmed);
         if sanitized.is_empty() {
             return Ok(Vec::new());
@@ -151,7 +173,8 @@ impl QueryEngine {
              ORDER BY rank
              LIMIT ?2"
         )?;
-        let rows = fallback_stmt.query_map(params![simple_query, effective_limit as i64], map_row)?;
+        let rows =
+            fallback_stmt.query_map(params![simple_query, effective_limit as i64], map_row)?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);
@@ -188,9 +211,7 @@ impl QueryEngine {
     }
 
     /// Asynchronous count of total units.
-    pub async fn count_total_units_async(
-        pool: ReadOnlyPool,
-    ) -> Result<i64, DbError> {
+    pub async fn count_total_units_async(pool: ReadOnlyPool) -> Result<i64, DbError> {
         tokio::task::spawn_blocking(move || {
             let conn = pool.get_connection()?;
             Self::count_total_units(&conn)
