@@ -71,11 +71,17 @@ class DbWriter:
             )
             self.db_path = resolved
 
-        # Ensure parent directory exists
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure parent directory exists for on-disk databases
+        if str(self.db_path) != ":memory:":
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 2. Open APSW Connection
-        self._conn = apsw.Connection(str(self.db_path))
+        # 2. Open APSW Connection with URI support
+        open_flags = (
+            apsw.SQLITE_OPEN_READWRITE
+            | apsw.SQLITE_OPEN_CREATE
+            | apsw.SQLITE_OPEN_URI
+        )
+        self._conn = apsw.Connection(str(self.db_path), flags=open_flags)
 
         # 3. Load sqlite-vec extension if requested
         self.has_vec = False

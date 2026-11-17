@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import apsw
 import pytest
@@ -339,10 +339,45 @@ class TestOutboxSyncAndSearch:
 class TestDriveGuard:
     """Tests for filesystem validation and network drive relocation."""
 
-    def test_local_path_not_relocated(self, temp_db_path: Path):
-        result = resolve_safe_db_path(temp_db_path)
-        assert not result.is_relocated
-        assert result.safe_path == temp_db_path.resolve()
+    def test_in_memory_and_uri_db(self):
+        # 1. In-memory database
+        mem_writer = DbWriter(":memory:", auto_init_schema=True)
+        assert not mem_writer.is_relocated
+        assert str(mem_writer.db_path) == ":memory:"
+        mem_writer.insert_translation_unit("mem_1", "Hello memory", row_order=1)
+        res = list(mem_writer.execute("SELECT count(*) FROM translation_units;"))[0][0]
+        assert res == 1
+        mem_writer.close()
+
+        # 2. URI database
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as f:
+            uri_file = f.name
+        uri_path = f"file:{uri_file}?mode=rwc"
+        uri_writer = DbWriter(uri_path, auto_init_schema=True)
+        uri_writer.insert_translation_unit("uri_1", "Hello URI", row_order=1)
+        res_uri = list(uri_writer.execute("SELECT count(*) FROM translation_units;"))[0][0]
+        assert res_uri == 1
+        uri_writer.close()
+
+    def test_linux_mounts_escaping_and_prefix_boundary(self, tmp_path: Path):
+        from renloc_core.db_writer.drive_guard import _check_linux_mounts
+        
+        # Test exact directory boundary: /var/share should NOT match /var/share-other
+        fake_mounts = """
+        /dev/sda1 / ext4 rw 0 0
+        192.168.1.50:/nfs /media/my\\040nfs\\040share nfs rw 0 0
+        192.168.1.51:/cifs /mnt/cifs cifs rw 0 0
+        """
+        with patch("builtins.open", mock_open(read_data=fake_mounts)):
+            # Inside NFS share with escaped spaces
+            is_net, fstype = _check_linux_mounts(Path("/media/my nfs share/game.sqlite"))
+            assert is_net
+            assert fstype == "nfs"
+
+            # False prefix boundary: /mnt/cifs-backup should NOT match /mnt/cifs
+            is_net_false, fstype_false = _check_linux_mounts(Path("/mnt/cifs-backup/game.sqlite"))
+            assert not is_net_false
+            assert fstype_false == "ext4"
 
     def test_simulated_network_mount_relocation(self, tmp_path: Path):
         fake_db = tmp_path / "network_project" / "project.sqlite"

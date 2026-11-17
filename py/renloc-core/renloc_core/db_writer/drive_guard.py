@@ -138,9 +138,16 @@ def _check_linux_mounts(path: Path) -> Tuple[Optional[bool], str]:
             for line in f:
                 parts = line.split()
                 if len(parts) >= 3:
-                    mount_point = parts[1]
+                    raw_mount = parts[1]
+                    mount_point = raw_mount.replace("\\040", " ").replace("\\011", "\t")
                     fstype = parts[2].lower()
-                    if resolved.startswith(mount_point) and len(mount_point) > len(best_match_mount):
+                    
+                    is_match = (
+                        mount_point == "/"
+                        or resolved == mount_point
+                        or resolved.startswith(mount_point + "/")
+                    )
+                    if is_match and len(mount_point) > len(best_match_mount):
                         best_match_mount = mount_point
                         best_match_fstype = fstype
 
@@ -274,8 +281,26 @@ def resolve_safe_db_path(
     """
     Validates a database path. If located on a network or unsafe filesystem,
     relocates it to a local fixed application directory under a deterministic project hash.
+    Explicitly handles :memory: and URI filenames.
     """
-    original = Path(db_path).resolve()
+    str_path = str(db_path)
+    if str_path == ":memory:" or str_path.startswith(":memory:"):
+        return SafePathResult(
+            safe_path=Path(":memory:"),
+            original_path=Path(":memory:"),
+            is_relocated=False,
+            fs_type="in_memory",
+            reason="In-memory SQLite database",
+        )
+
+    # Handle URI filenames (file:path?params)
+    target_str = str_path
+    if target_str.startswith("file:"):
+        # Strip URI query string for filesystem path validation
+        clean_path = target_str[5:].split("?")[0]
+        original = Path(clean_path).resolve()
+    else:
+        original = Path(db_path).resolve()
     is_net, fs_type = is_network_filesystem(original)
 
     if not is_net:
