@@ -8,13 +8,100 @@ pub mod sidecar;
 use crate::rpc_client::RpcClient;
 use crate::sidecar::SidecarSupervisor;
 use renloc_db::{QueryEngine, ReadOnlyPool, TranslationUnitRow};
+use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 
 pub struct AppState {
     pub db_pool: Mutex<Option<ReadOnlyPool>>,
     pub rpc_client: Mutex<Option<RpcClient>>,
     pub sidecar: Mutex<Option<SidecarSupervisor>>,
+}
+
+fn get_python_path() -> PathBuf {
+    if let Ok(p) = std::env::var("RENSLATE_PYTHON") {
+        let pb = PathBuf::from(p);
+        if pb.exists() {
+            return pb;
+        }
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join(".venvs/core/bin/python"));
+        if let Some(p1) = cwd.parent() {
+            candidates.push(p1.join(".venvs/core/bin/python"));
+            if let Some(p2) = p1.parent() {
+                candidates.push(p2.join(".venvs/core/bin/python"));
+            }
+        }
+    }
+    // Hardcoded project root fallback
+    candidates.push(PathBuf::from(".venvs/core/bin/python"));
+
+    for c in candidates {
+        if c.exists() {
+            return c;
+        }
+    }
+    PathBuf::from("python3")
+}
+
+fn get_socket_path() -> PathBuf {
+    std::env::temp_dir().join("renslate_sidecar_rpc.sock")
+}
+
+fn ensure_sidecar_started(state: &AppState) -> Result<RpcClient, String> {
+    let mut client_lock = state.rpc_client.lock().unwrap();
+    if let Some(client) = client_lock.as_ref() {
+        return Ok(client.clone());
+    }
+
+    let socket_path = get_socket_path();
+    if socket_path.exists() {
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    let py_path = get_python_path();
+    let mut supervisor = SidecarSupervisor::new(&py_path);
+    let token_hex = supervisor.auth_token().as_hex().to_string();
+    let sock_str = socket_path.to_string_lossy().to_string();
+
+    supervisor
+        .start(&[
+            "-m",
+            "renloc_core",
+            "serve",
+            "--socket",
+            &sock_str,
+            "--token",
+            &token_hex,
+        ])
+        .map_err(|e| format!("Failed to spawn Python sidecar: {}", e))?;
+
+    // Wait up to 3 seconds for socket file to appear
+    let start = std::time::Instant::now();
+    let mut socket_ready = false;
+    while start.elapsed() < std::time::Duration::from_millis(3000) {
+        if socket_path.exists() {
+            socket_ready = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    if !socket_ready {
+        supervisor.stop();
+        return Err("Sidecar process spawned, but RPC socket file did not appear within 3 seconds.".to_string());
+    }
+
+    let client = RpcClient::with_token(socket_path, token_hex);
+    *client_lock = Some(client.clone());
+
+    let mut sidecar_lock = state.sidecar.lock().unwrap();
+    *sidecar_lock = Some(supervisor);
+
+    Ok(client)
 }
 
 #[tauri::command]
@@ -83,10 +170,15 @@ async fn call_sidecar_rpc(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     let client = {
-        let lock = state.rpc_client.lock().unwrap();
-        lock.clone()
+        let existing = {
+            let lock = state.rpc_client.lock().unwrap();
+            lock.clone()
+        };
+        match existing {
+            Some(c) => c,
+            None => ensure_sidecar_started(&state)?,
+        }
     };
-    let client = client.ok_or_else(|| "Sidecar RPC client not connected".to_string())?;
     client
         .call(&method, payload)
         .await
@@ -99,7 +191,11 @@ fn get_sidecar_status(state: State<'_, AppState>) -> Result<bool, String> {
     if let Some(supervisor) = lock.as_mut() {
         Ok(supervisor.is_running())
     } else {
-        Ok(false)
+        drop(lock);
+        match ensure_sidecar_started(&state) {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false),
+        }
     }
 }
 
@@ -111,6 +207,15 @@ fn main() {
             db_pool: Mutex::new(None),
             rpc_client: Mutex::new(None),
             sidecar: Mutex::new(None),
+        })
+        .setup(|app| {
+            let state = app.state::<AppState>();
+            if let Err(e) = ensure_sidecar_started(&state) {
+                eprintln!("[!] Sidecar lazy start deferred: {}", e);
+            } else {
+                println!("[+] Sidecar auto-connected on Tauri launch!");
+            }
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             open_project_db,

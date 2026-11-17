@@ -79,6 +79,33 @@ export async function searchUnits(
 
 export async function callSidecarRpc(method: string, payload: unknown): Promise<unknown> {
   if (!isTauri()) {
+    if (method === 'scan_project') {
+      return { total_extracted: 350, db_path: '/mock/project.sqlite', files_scanned: 42, rpyc_count: 8 };
+    }
+    if (method === 'audit_project_fonts') {
+      return {
+        fonts: [
+          { font_name: 'DejaVuSans.ttf', total_required: 134, supported_count: 134, missing_chars: '', is_fully_compatible: true },
+          { font_name: 'CustomTitle.ttf', total_required: 134, supported_count: 50, missing_chars: 'àáảãạ', is_fully_compatible: false },
+        ],
+        is_all_compatible: false,
+        fontgroup_dsl: 'init python:\n    renpy.register_font_group("vietnamese_font_group",\n        FontGroup().add("game/fonts/original.ttf", 0x0020, 0x007e)\n        .add("game/tl/vietnamese/fonts/fallback.ttf", 0x00c0, 0x1ef9)\n        .add("game/fonts/original.ttf")\n    )',
+        total_fonts_checked: 2,
+      };
+    }
+    if (method === 'start_translation') {
+      return { translated_count: 500, status: 'completed' };
+    }
+    if (method === 'export_package') {
+      return {
+        exported_files: ['script.rpy', 'common.rpy', '00_renloc_fonts.rpy', 'renloc_runtime_hook.rpy'],
+        output_dir: '/mock/game/tl/vietnamese',
+        total_items: 350,
+      };
+    }
+    if (method === 'launch_game') {
+      return { launched: true, executable: 'game.sh', pid: 12345 };
+    }
     return { ok: true, mock: true };
   }
   return await invoke('call_sidecar_rpc', { method, payload });
